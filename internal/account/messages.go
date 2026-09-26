@@ -86,6 +86,14 @@ func (c *MessageCache) Get(ctx context.Context, key CacheKey, w Window) ([]maile
 // once the cache holds more than one batch, which showed as a served
 // window in the wrong order, silently dropping rows: see
 // migrations/0003_message_sort_rank.sql and 0005_message_cache_position.sql.
+//
+// A page written from the top of the mailbox (offset 0) supersedes
+// everything below it: if its newest message differs from the cached
+// newest, the mailbox changed at the top since the cache was built (new
+// mail arrived, or mail was deleted), which shifts every cached row's
+// position. The cached window and its Coverage/Exhausted are then
+// discarded rather than left to mix stale positions into a served window
+// (see TestService_FetchMessages_NewMailAtTopDoesNotServeStaleRows).
 func (c *MessageCache) Upsert(ctx context.Context, key CacheKey, msgs []mailer.Message, offset int) error {
 	if len(msgs) == 0 {
 		return nil
@@ -95,6 +103,47 @@ func (c *MessageCache) Upsert(ctx context.Context, key CacheKey, msgs []mailer.M
 		return fmt.Errorf("account: begin tx: %w", err)
 	}
 	defer tx.Rollback()
+
+	// The page's first message should sit at rank `offset`. If the cache
+	// disagrees — a different message occupies that rank, or this message
+	// is cached at a different rank — the mailbox shifted under the cache
+	// (new mail arrived at the top, or mail was deleted), so every cached
+	// row's position is stale: discard the rows and their
+	// Coverage/Exhausted rather than let stale positions mix into a served
+	// window (see TestService_FetchMessages_NewMailAtTop*).
+	stale := false
+	anchors, err := tx.QueryContext(ctx, `
+		SELECT uid, sort_rank FROM messages_cache
+		WHERE account_id = ? AND protocol = ? AND folder = ? AND (sort_rank = ? OR uid = ?)`,
+		key.AccountID, key.Protocol, key.Folder, offset, msgs[0].UID)
+	if err != nil {
+		return fmt.Errorf("account: read cache anchors: %w", err)
+	}
+	for anchors.Next() {
+		var uid string
+		var rank int
+		if err := anchors.Scan(&uid, &rank); err != nil {
+			anchors.Close()
+			return fmt.Errorf("account: scan cache anchor: %w", err)
+		}
+		if (rank == offset && uid != msgs[0].UID) || (uid == msgs[0].UID && rank != offset) {
+			stale = true
+		}
+	}
+	anchors.Close()
+	if err := anchors.Err(); err != nil {
+		return fmt.Errorf("account: read cache anchors: %w", err)
+	}
+	if stale {
+		for _, q := range []string{
+			`DELETE FROM messages_cache WHERE account_id = ? AND protocol = ? AND folder = ?`,
+			`DELETE FROM messages_cache_state WHERE account_id = ? AND protocol = ? AND folder = ?`,
+		} {
+			if _, err := tx.ExecContext(ctx, q, key.AccountID, key.Protocol, key.Folder); err != nil {
+				return fmt.Errorf("account: invalidate stale cache: %w", err)
+			}
+		}
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	stmt, err := tx.PrepareContext(ctx, `

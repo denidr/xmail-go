@@ -665,11 +665,11 @@ func TestMessageCache_ListOrdersAcrossBatches(t *testing.T) {
 		}
 		return out
 	}
-	// Insert the second page first, on purpose.
-	if err := cache.Upsert(ctx, key, page(20, 20), 20); err != nil {
+	// Page normally: the top page, then the next page down.
+	if err := cache.Upsert(ctx, key, page(0, 20), 0); err != nil {
 		t.Fatalf("Upsert() error = %v", err)
 	}
-	if err := cache.Upsert(ctx, key, page(0, 20), 0); err != nil {
+	if err := cache.Upsert(ctx, key, page(20, 20), 20); err != nil {
 		t.Fatalf("Upsert() error = %v", err)
 	}
 
@@ -810,5 +810,138 @@ func TestService_FetchMessages_ExhaustedCacheRecoversWhenMailboxGrows(t *testing
 	}
 	if len(msgs) != 80 {
 		t.Errorf("FetchMessages(80,0) len = %d, want 80 (stale Exhausted must not serve the 10-row cache)", len(msgs))
+	}
+}
+
+// TestService_FetchMessages_NewMailAtTopDoesNotServeStaleRows is the
+// regression test for stale mailbox positions: once new mail arrives at
+// the top, every cached row's sort_rank no longer reflects its position,
+// so a later served window must not mix those rows in.
+func TestService_FetchMessages_NewMailAtTopDoesNotServeStaleRows(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	mailbox := make([]string, 200) // mailbox[0] is the newest
+	for i := range mailbox {
+		mailbox[i] = fmt.Sprintf("u%d", i)
+	}
+	fetch := func(limit, offset int) []mailer.Message {
+		if offset >= len(mailbox) {
+			return nil
+		}
+		end := offset + limit
+		if end > len(mailbox) {
+			end = len(mailbox)
+		}
+		out := make([]mailer.Message, 0, end-offset)
+		for i := offset; i < end; i++ {
+			out = append(out, mailer.Message{UID: mailbox[i], Folder: "INBOX"})
+		}
+		return out
+	}
+	calls := 0
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{fetchCalls: &calls, fetchFn: fetch}
+	})
+
+	// Cache the newest 60 of the original mailbox.
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 60, 0, false); err != nil {
+		t.Fatalf("FetchMessages(60,0) error = %v", err)
+	}
+
+	// Five new messages arrive at the top; every cached row shifts down.
+	mailbox = append([]string{"n0", "n1", "n2", "n3", "n4"}, mailbox...)
+
+	// Refresh just the first page — a realistic "any new mail?" action.
+	// The cached rows below it keep their pre-shift positions.
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, true); err != nil {
+		t.Fatalf("FetchMessages(20,0,refresh=true) error = %v", err)
+	}
+
+	// A 60-message window must not be answered from rows whose recorded
+	// position predates the new mail.
+	before := calls
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 60, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(60,0) (2nd) error = %v", err)
+	}
+	if len(msgs) != 60 {
+		t.Fatalf("len = %d, want 60", len(msgs))
+	}
+	for i, want := range mailbox[:60] {
+		if msgs[i].UID != want {
+			t.Errorf("msgs[%d].UID = %q, want %q (rows cached before the new mail must not be served; calls %d->%d)", i, msgs[i].UID, want, before, calls)
+			break
+		}
+	}
+}
+
+// TestService_FetchMessages_OffsetPageAfterNewMailDoesNotServeStaleRows is
+// the offset>0 counterpart: a deeper page fetched after the mailbox
+// shifted records positions relative to the new mailbox, so it must not
+// extend a cache whose earlier rows predate the new mail.
+func TestService_FetchMessages_OffsetPageAfterNewMailDoesNotServeStaleRows(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	mailbox := make([]string, 200) // mailbox[0] is the newest
+	for i := range mailbox {
+		mailbox[i] = fmt.Sprintf("u%d", i)
+	}
+	fetch := func(limit, offset int) []mailer.Message {
+		if offset >= len(mailbox) {
+			return nil
+		}
+		end := offset + limit
+		if end > len(mailbox) {
+			end = len(mailbox)
+		}
+		out := make([]mailer.Message, 0, end-offset)
+		for i := offset; i < end; i++ {
+			out = append(out, mailer.Message{UID: mailbox[i], Folder: "INBOX"})
+		}
+		return out
+	}
+	calls := 0
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{fetchCalls: &calls, fetchFn: fetch}
+	})
+
+	// Cache the newest 20 of the original mailbox.
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false); err != nil {
+		t.Fatalf("FetchMessages(20,0) error = %v", err)
+	}
+
+	// Five new messages arrive at the top; every cached row shifts down.
+	mailbox = append([]string{"n0", "n1", "n2", "n3", "n4"}, mailbox...)
+
+	// A deeper page — its positions are relative to the new mailbox.
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 20, false); err != nil {
+		t.Fatalf("FetchMessages(20,20) error = %v", err)
+	}
+
+	// The top 30 must not be served from the incoherent mix that page
+	// would leave behind.
+	before := calls
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 30, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(30,0) error = %v", err)
+	}
+	if len(msgs) != 30 {
+		t.Fatalf("len = %d, want 30", len(msgs))
+	}
+	for i, want := range mailbox[:30] {
+		if msgs[i].UID != want {
+			t.Errorf("msgs[%d].UID = %q, want %q (a deeper page written after the shift must not extend a stale cache; calls %d->%d)", i, msgs[i].UID, want, before, calls)
+			break
+		}
 	}
 }

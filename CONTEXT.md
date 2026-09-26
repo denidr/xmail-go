@@ -40,7 +40,7 @@ How many of a mailbox's newest messages the Message cache is known to hold conti
 _Avoid_: cache size, depth
 
 **Exhausted**:
-Once a fetch returns a short page, the whole mailbox is known to be cached, and any Fetch window can be answered from the Message cache.
+The whole mailbox is known to be in the Message cache, so any Fetch window is answerable from it. A fetch that returns a short page sets this; a later full page reaching past the known end clears it (the mailbox grew). A fetch that starts below the cached window is ignored.
 
 **Check**:
 A poll of an account's mailbox that reports the server's unread count plus how many of the most recent Messages are not yet in the Message cache.
