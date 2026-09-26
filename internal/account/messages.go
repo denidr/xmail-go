@@ -37,8 +37,12 @@ type Window struct {
 //
 //   - Coverage  = newest messages known to be cached contiguously from
 //     the top of the mailbox.
-//   - Exhausted = the whole mailbox is cached, so any Window is
-//     answerable without dialing.
+//   - Exhausted = as of the last dial, the whole mailbox is cached, so a
+//     Window that starts inside Coverage is answerable without dialing.
+//     It is not a promise about now: Get dials for a Window that starts
+//     at or past Coverage, and for every Window of an empty mailbox
+//     (Coverage 0), because mail the cache has never seen may have
+//     arrived since.
 //
 // See migrations/0004_message_cache_state.sql for the bug this fixes.
 type MessageCache struct {
@@ -64,24 +68,33 @@ func (c *MessageCache) Get(ctx context.Context, key CacheKey, w Window) ([]maile
 	}
 	// A window strictly inside the covered prefix is answerable. Exhausted
 	// also lets one run off that prefix's end — the mailbox ends there — but
-	// only when the window still starts inside it: Exhausted is only as
-	// fresh as the last dial, so mail the cache has never seen could sit at
-	// or past the end, and answering "no more messages" would hide it (see
-	// TestService_FetchMessages_StaleExhaustedDoesNotHideNewMail).
+	// only when the window still starts inside it: Exhausted is as fresh as
+	// the last dial and no fresher, so mail the cache has never seen could
+	// sit at or past the end, and answering "no more messages" would hide it
+	// (see TestService_FetchMessages_StaleExhaustedDoesNotHideNewMail). With
+	// coverage 0 that means every read of an empty mailbox dials — the price
+	// of never trusting a remembered "the mailbox is empty".
+	//
+	// These comparisons avoid w.Offset+w.Limit, which overflows for an absurd
+	// w.Limit (the API does not bound it) and would then serve a truncated
+	// window (see TestService_FetchMessages_MaxLimitDoesNotTruncate).
 	if exhausted {
 		if w.Offset >= coverage {
 			return nil, false, nil
 		}
-	} else if w.Offset+w.Limit > coverage {
+	} else if w.Offset > coverage || w.Limit > coverage-w.Offset {
 		return nil, false, nil
 	}
 	msgs, err := c.list(ctx, key, w)
 	if err != nil {
 		return nil, false, err
 	}
-	// Coverage may claim a window the cache can't actually produce (e.g.
-	// rows removed out from under it); fall back to dialing if so.
-	if !exhausted && len(msgs) == 0 {
+	// The rows are a contiguous prefix, so this window has to come back with
+	// exactly min(Limit, Coverage-Offset) of them. Anything else means the
+	// rows fell behind Coverage — another request's Upsert+Record pair can
+	// interleave with this one — so dial rather than serve a short or empty
+	// page as if it were the mailbox's end.
+	if want := min(w.Limit, coverage-w.Offset); len(msgs) != want {
 		return nil, false, nil
 	}
 	return msgs, true, nil
@@ -110,6 +123,11 @@ func (c *MessageCache) Get(ctx context.Context, key CacheKey, w Window) ([]maile
 // same goes for a top fetch that comes back empty: it proves the mailbox
 // has no messages at all, so anything cached for it is stale (see
 // TestService_FetchMessages_EmptyMailboxDoesNotServeStaleRows).
+//
+// UIDs are assumed unique within a page (both shipped fetchers guarantee
+// it): the upsert key is (account_id, protocol, folder, uid), so a
+// duplicate would collapse two ranks into one row while Record still
+// counts the whole page.
 func (c *MessageCache) Upsert(ctx context.Context, key CacheKey, msgs []mailer.Message, offset int) error {
 	if offset < 0 {
 		// Not a position in a mailbox — refuse rather than write rows under

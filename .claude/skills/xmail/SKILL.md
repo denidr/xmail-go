@@ -28,7 +28,7 @@ xmail is this repo's own email-as-a-service backend (see [PRD.MD](../../../PRD.M
 ### Connection info
 
 You need a base URL and an API key. Don't guess — get them from the user or the environment:
-- Base URL: often `http://localhost:5569` for local dev, or whatever `XMAIL_LISTEN_ADDR` was set to. Ask the user if unknown; don't assume a port.
+- Base URL: often `http://localhost:8080` for local dev, or whatever `XMAIL_LISTEN_ADDR` was set to. Ask the user if unknown; don't assume a port.
 - API key: the value of `XMAIL_API_KEY` for that running instance. Ask the user; never invent one.
 - Every request except `GET /healthz` needs header `X-API-Key: <key>`.
 - All responses are `{"data": ..., "error": null}` on success, or `{"data": null, "error": {"code": "...", "message": "..."}}` on failure. Check `error` before trusting `data`.
@@ -107,7 +107,7 @@ curl -s "$BASE_URL/accounts/$ACCOUNT_ID/messages?folder=INBOX&limit=20&offset=0&
 curl -s -X POST "$BASE_URL/accounts/$ACCOUNT_ID/check" -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"protocol": "imap", "folder": "INBOX"}'
 curl -s -X POST "$BASE_URL/accounts/$ACCOUNT_ID/messages/read" -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d '{"protocol": "imap", "folder": "INBOX", "uid": "12345"}'
 ```
-`protocol` defaults to `imap` if omitted (POP3 has no folders, no unread-count concept, and no mark-as-read — `check` against `pop3` always reports `unread_count: 0`, and `messages/read` against `pop3` returns a validation error). **Fetching is cache-first**: the first call for a given account+folder dials the mail server and caches the result; later calls are served from that cache without re-dialing, as long as the requested window is already covered — a window that extends past what's cached (e.g. a larger `limit`) dials again, and so does a window that starts past the cached prefix (the cache may be behind the mailbox). A page shorter than `limit` tells xmail where the mailbox ends, so any cached row beyond it is dropped rather than served as mail that no longer exists. Add `&refresh=true` to force a fresh dial (e.g. right after you expect new mail to have arrived). Message objects: `{"uid","folder","subject","from","to","date","is_read","attachments"}` (`attachments` is a list of filenames, omitted if none — IMAP only).
+`protocol` defaults to `imap` if omitted (POP3 has no folders, no unread-count concept, and no mark-as-read — `check` against `pop3` always reports `unread_count: 0`, and `messages/read` against `pop3` returns a validation error). **Fetching is cache-first**: the first call for a given account+folder dials the mail server and caches the result; later calls are served from that cache without re-dialing, as long as the requested window starts inside the cached coverage. A window that starts past the cached prefix dials again — the cache may be behind the mailbox — and so does a window that runs past what's cached unless the cache is known to be exhausted. A page shorter than `limit` tells xmail where the mailbox ends, so any cached row beyond it is dropped rather than served as mail that no longer exists. The cache is only as fresh as the last dial: mail that arrived, or was deleted, since then keeps being returned until a fetch covers it. Add `&refresh=true` to force a fresh dial (e.g. right after you expect new mail to have arrived). Message objects: `{"uid","folder","subject","from","to","date","is_read","attachments"}` (`attachments` is a list of filenames, omitted if none — IMAP only).
 
 ## 3. MCP tools
 

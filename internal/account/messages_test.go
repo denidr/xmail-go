@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 
 	"xmail/internal/mailer"
@@ -197,12 +198,24 @@ func TestMessageCache_Coverage(t *testing.T) {
 		t.Error("window past coverage served, want it to dial")
 	}
 
-	// A short page latches Exhausted; any window is then answerable.
+	// The mailbox is 30 long: a short page latches Exhausted at its end.
+	rows = make([]mailer.Message, 30)
+	for i := range rows {
+		rows[i] = mailer.Message{UID: fmt.Sprintf("u%d", i+1), Folder: "INBOX"}
+	}
+	if err := cache.Upsert(ctx, key, rows, 0); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
 	if err := cache.Record(ctx, key, Window{Limit: 50}, 30); err != nil {
 		t.Fatalf("Record() (short page) error = %v", err)
 	}
 	if !served("exhausted", Window{Limit: 100}) {
 		t.Error("window after exhaustion not served, want served")
+	}
+	// ...but one that starts past the now-known end must dial: the mailbox
+	// could have grown since that dial.
+	if served("past exhausted end", Window{Limit: 100, Offset: 30}) {
+		t.Error("window starting at the exhausted coverage served, want it to dial")
 	}
 
 	// Coverage/Exhausted never regress on a smaller later page.
@@ -1415,5 +1428,131 @@ func TestService_FetchMessages_StaleExhaustedDoesNotHideNewMail(t *testing.T) {
 	}
 	if msgs[0].UID != "m0" {
 		t.Errorf("msgs[0].UID = %q, want %q", msgs[0].UID, "m0")
+	}
+}
+
+// TestMessageCache_EmptyTopPageInvalidatesStaleRows pins Upsert's empty-page
+// invalidation directly: a mailbox the server now reports as empty must not
+// keep serving what used to be cached for it.
+func TestMessageCache_EmptyTopPageInvalidatesStaleRows(t *testing.T) {
+	ctx := context.Background()
+	repo, cache := newTestCache(t)
+	created, err := repo.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	key := CacheKey{AccountID: created.ID, Protocol: ProtocolIMAP, Folder: "INBOX"}
+
+	rows := make([]mailer.Message, 5)
+	for i := range rows {
+		rows[i] = mailer.Message{UID: fmt.Sprintf("u%d", i), Folder: "INBOX"}
+	}
+	if err := cache.Upsert(ctx, key, rows, 0); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	if err := cache.Record(ctx, key, Window{Limit: 5}, 5); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+
+	// The server reports an empty mailbox.
+	if err := cache.Upsert(ctx, key, nil, 0); err != nil {
+		t.Fatalf("Upsert(empty) error = %v", err)
+	}
+	if coverage, exhausted, err := cache.state(ctx, key); err != nil || coverage != 0 || exhausted {
+		t.Errorf("state = (coverage=%d, exhausted=%v, err=%v), want (0, false, nil)", coverage, exhausted, err)
+	}
+	got, served, err := cache.Get(ctx, key, Window{Limit: 5})
+	if err != nil || served || len(got) != 0 {
+		t.Errorf("Get() = (%d rows, served %v, err %v), want (0 rows, false, nil)", len(got), served, err)
+	}
+}
+
+// TestMessageCache_GetDialsWhenRowsFellBehindCoverage: Upsert and Record are
+// separate transactions, so two requests for one key can interleave and leave
+// Coverage counting rows that are gone. Get must dial then, rather than report
+// the mailbox as ended.
+func TestMessageCache_GetDialsWhenRowsFellBehindCoverage(t *testing.T) {
+	ctx := context.Background()
+	repo, cache := newTestCache(t)
+	created, err := repo.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	key := CacheKey{AccountID: created.ID, Protocol: ProtocolIMAP, Folder: "INBOX"}
+
+	rows := make([]mailer.Message, 3)
+	for i := range rows {
+		rows[i] = mailer.Message{UID: fmt.Sprintf("u%d", i), Folder: "INBOX"}
+	}
+
+	// Request A writes its page; request B's empty top fetch wipes the key;
+	// then A records its (now stale) page.
+	if err := cache.Upsert(ctx, key, rows, 0); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	if err := cache.Upsert(ctx, key, nil, 0); err != nil {
+		t.Fatalf("Upsert(empty) error = %v", err)
+	}
+	if err := cache.Record(ctx, key, Window{Limit: 50}, 3); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if coverage, exhausted, err := cache.state(ctx, key); err != nil || coverage != 3 || !exhausted {
+		t.Fatalf("state = (coverage=%d, exhausted=%v, err=%v), want (3, true, nil) — the interleaving this test pins", coverage, exhausted, err)
+	}
+
+	if _, served, err := cache.Get(ctx, key, Window{Limit: 20}); err != nil || served {
+		t.Errorf("Get() served = %v (err %v), want false: Coverage counts rows that are gone", served, err)
+	}
+}
+
+// TestService_FetchMessages_MaxLimitDoesNotTruncate pins the overflow-free
+// coverage gate: offset+limit must not wrap around and let a stale, smaller
+// cached page answer a huge window.
+func TestService_FetchMessages_MaxLimitDoesNotTruncate(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	all := make([]mailer.Message, 50)
+	for i := range all {
+		all[i] = mailer.Message{UID: fmt.Sprintf("u%d", i), Folder: "INBOX"}
+	}
+	calls := 0
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{
+			fetchCalls: &calls,
+			fetchFn: func(limit, offset int) []mailer.Message {
+				if offset >= len(all) {
+					return nil
+				}
+				end := offset + limit
+				if end > len(all) || end < offset { // the test's own overflow guard
+					end = len(all)
+				}
+				return all[offset:end]
+			},
+		}
+	})
+
+	// Cache a full 20-row page: Coverage 20, not exhausted.
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false); err != nil {
+		t.Fatalf("FetchMessages(20,0) error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("fetchCalls = %d, want 1", calls)
+	}
+
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", math.MaxInt, 1, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(MaxInt,1) error = %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("fetchCalls = %d, want 2 (a wrapped window must not be served from cache)", calls)
+	}
+	if len(msgs) != 49 {
+		t.Errorf("len = %d, want 49 (the live page from offset 1)", len(msgs))
 	}
 }
