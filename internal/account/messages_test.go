@@ -1268,3 +1268,152 @@ func TestService_FetchMessages_FullyReplacedMailboxDoesNotServeDuplicateRanks(t 
 		}
 	}
 }
+
+// TestMessageCache_Record_ShortPageDropsRowsPastTheEnd: a short page proves
+// where the mailbox ends, so the rows cached past that point must go with it.
+func TestMessageCache_Record_ShortPageDropsRowsPastTheEnd(t *testing.T) {
+	ctx := context.Background()
+	repo, cache := newTestCache(t)
+	created, err := repo.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	key := CacheKey{AccountID: created.ID, Protocol: ProtocolIMAP, Folder: "INBOX"}
+
+	rows := make([]mailer.Message, 10)
+	for i := range rows {
+		rows[i] = mailer.Message{UID: fmt.Sprintf("u%d", i), Folder: "INBOX"}
+	}
+	if err := cache.Upsert(ctx, key, rows, 0); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	if err := cache.Record(ctx, key, Window{Limit: 10}, 10); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+
+	// A later window past the end shows the mailbox is only 7 long.
+	if err := cache.Record(ctx, key, Window{Limit: 20}, 7); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if coverage, exhausted, err := cache.state(ctx, key); err != nil || coverage != 7 || !exhausted {
+		t.Errorf("state = (coverage=%d, exhausted=%v, err=%v), want (7, true, nil)", coverage, exhausted, err)
+	}
+	got, err := cache.list(ctx, key, Window{Limit: 20})
+	if err != nil {
+		t.Fatalf("list() error = %v", err)
+	}
+	if len(got) != 7 {
+		t.Fatalf("list() len = %d, want 7 (rows past the mailbox end must be dropped)", len(got))
+	}
+}
+
+// TestService_FetchMessages_ShrunkMailboxDoesNotServeDeletedMessages is the
+// regression test for a mailbox that lost its OLDEST messages: the top is
+// unchanged, so the coherence check sees nothing, and the deleted rows used
+// to keep being served.
+func TestService_FetchMessages_ShrunkMailboxDoesNotServeDeletedMessages(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	mailbox := make([]string, 10)
+	for i := range mailbox {
+		mailbox[i] = fmt.Sprintf("c%d", i)
+	}
+	fetch := func(limit, offset int) []mailer.Message {
+		if offset >= len(mailbox) {
+			return nil
+		}
+		end := offset + limit
+		if end > len(mailbox) {
+			end = len(mailbox)
+		}
+		out := make([]mailer.Message, 0, end-offset)
+		for i := offset; i < end; i++ {
+			out = append(out, mailer.Message{UID: mailbox[i], Folder: "INBOX"})
+		}
+		return out
+	}
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{fetchFn: fetch}
+	})
+
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 10, 0, false); err != nil {
+		t.Fatalf("FetchMessages(10,0) error = %v", err)
+	}
+
+	// The 3 oldest are deleted server-side; the top is untouched.
+	mailbox = mailbox[:7]
+
+	// A window past the new end proves the mailbox is 7 long now.
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, true); err != nil {
+		t.Fatalf("FetchMessages(20,0,refresh) error = %v", err)
+	}
+
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(20,0) error = %v", err)
+	}
+	if len(msgs) != 7 {
+		t.Fatalf("len = %d, want 7 (the deleted messages must not be served)", len(msgs))
+	}
+	for i, want := range mailbox {
+		if msgs[i].UID != want {
+			t.Errorf("msgs[%d].UID = %q, want %q", i, msgs[i].UID, want)
+			break
+		}
+	}
+}
+
+// TestService_FetchMessages_StaleExhaustedDoesNotHideNewMail: Exhausted only
+// means "fully cached as of the last dial", so a window that starts past the
+// cached prefix must dial rather than answer an empty page.
+func TestService_FetchMessages_StaleExhaustedDoesNotHideNewMail(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	mailbox := []string{"s0"}
+	fetch := func(limit, offset int) []mailer.Message {
+		if offset >= len(mailbox) {
+			return nil
+		}
+		end := offset + limit
+		if end > len(mailbox) {
+			end = len(mailbox)
+		}
+		out := make([]mailer.Message, 0, end-offset)
+		for i := offset; i < end; i++ {
+			out = append(out, mailer.Message{UID: mailbox[i], Folder: "INBOX"})
+		}
+		return out
+	}
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{fetchFn: fetch}
+	})
+
+	// A 1-message mailbox latches Exhausted off a short page.
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false); err != nil {
+		t.Fatalf("FetchMessages(20,0) error = %v", err)
+	}
+
+	// Mail arrives.
+	mailbox = []string{"n0", "n1", "m0"}
+
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 2, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(20,2) error = %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len = %d, want 1 (the message at rank 2 must not be hidden)", len(msgs))
+	}
+	if msgs[0].UID != "m0" {
+		t.Errorf("msgs[0].UID = %q, want %q", msgs[0].UID, "m0")
+	}
+}

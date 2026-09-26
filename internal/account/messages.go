@@ -55,11 +55,24 @@ func NewMessageCache(db *sql.DB) *MessageCache {
 // dial the mail server instead. On a served result, msgs is the
 // window's rows, newest-first.
 func (c *MessageCache) Get(ctx context.Context, key CacheKey, w Window) ([]mailer.Message, bool, error) {
+	if w.Offset < 0 || w.Limit <= 0 {
+		return nil, false, nil
+	}
 	coverage, exhausted, err := c.state(ctx, key)
 	if err != nil {
 		return nil, false, err
 	}
-	if !exhausted && w.Offset+w.Limit > coverage {
+	// A window strictly inside the covered prefix is answerable. Exhausted
+	// also lets one run off that prefix's end — the mailbox ends there — but
+	// only when the window still starts inside it: Exhausted is only as
+	// fresh as the last dial, so mail the cache has never seen could sit at
+	// or past the end, and answering "no more messages" would hide it (see
+	// TestService_FetchMessages_StaleExhaustedDoesNotHideNewMail).
+	if exhausted {
+		if w.Offset >= coverage {
+			return nil, false, nil
+		}
+	} else if w.Offset+w.Limit > coverage {
 		return nil, false, nil
 	}
 	msgs, err := c.list(ctx, key, w)
@@ -98,6 +111,11 @@ func (c *MessageCache) Get(ctx context.Context, key CacheKey, w Window) ([]maile
 // has no messages at all, so anything cached for it is stale (see
 // TestService_FetchMessages_EmptyMailboxDoesNotServeStaleRows).
 func (c *MessageCache) Upsert(ctx context.Context, key CacheKey, msgs []mailer.Message, offset int) error {
+	if offset < 0 {
+		// Not a position in a mailbox — refuse rather than write rows under
+		// a meaningless rank.
+		return nil
+	}
 	if len(msgs) == 0 && offset != 0 {
 		// A deep page past the end proves nothing about the prefix and has
 		// no ranks to compare — don't even open a transaction for it.
@@ -242,14 +260,25 @@ func invalidateCache(ctx context.Context, tx *sql.Tx, key CacheKey) error {
 // wrongly latch Exhausted (a real truncation bug on the REST `?offset=`
 // path; see TestMessageCache_Record_OffsetDoesNotInflateCoverage).
 //
-// A short page means the mailbox ends here, so Exhausted latches. A full
-// page means there is more mail than this window showed, so the mailbox
-// is not fully cached — which un-latches a stale Exhausted once the
-// mailbox has grown since it was set (CheckNew always dials, so it
+// A short page (fewer messages than it asked for) proves the mailbox ends
+// at w.Offset+returned, so every cached row at or past that end is stale
+// and is deleted, and Coverage drops to it. Without that, a mailbox that
+// lost its oldest messages keeps serving them: the coherence check in
+// Upsert only sees the ranks a page actually covers (see
+// TestService_FetchMessages_ShrunkMailboxDoesNotServeDeletedMessages).
+// Exhausted latches only when the page pinned the end (it carried
+// messages, or it was the top page) and the rows really reach it.
+//
+// A full page says there is more mail than this window showed, so the
+// mailbox is not fully cached — which un-latches a stale Exhausted once
+// the mailbox has grown since it was set (CheckNew always dials, so it
 // clears the latch; see the TestService_FetchMessages_ExhaustedCache*
 // regression test). The one exception: a full page that doesn't reach
 // past the end we already knew about proves nothing, so the latch stands.
 func (c *MessageCache) Record(ctx context.Context, key CacheKey, w Window, returned int) error {
+	if w.Offset < 0 || w.Limit <= 0 {
+		return nil
+	}
 	coverage, wasExhausted, err := c.state(ctx, key)
 	if err != nil {
 		return err
@@ -257,28 +286,57 @@ func (c *MessageCache) Record(ctx context.Context, key CacheKey, w Window, retur
 	if w.Offset > coverage {
 		return nil
 	}
-	short := returned < w.Limit
 	next := w.Offset + returned
+	short := returned < w.Limit
 	if !short {
 		next = w.Offset + w.Limit
 	}
-	exhausted := short || (wasExhausted && next <= coverage)
+	newCoverage := coverage
+	exhausted := false
+	if short {
+		// Upsert wrote this page's rows, and they start at or above the
+		// covered prefix, so the prefix now reaches exactly `next`.
+		newCoverage = next
+		// `next` is the mailbox's length only when the page carried
+		// messages (or was the top page); an empty page below the top only
+		// bounds it, so it must not latch Exhausted.
+		exhausted = returned > 0 || w.Offset == 0
+	} else {
+		if next > newCoverage {
+			newCoverage = next
+		}
+		exhausted = wasExhausted && next <= coverage
+	}
 	ex := 0
 	if exhausted {
 		ex = 1
 	}
-	_, err = c.db.ExecContext(ctx, `
+
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("account: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if short {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM messages_cache
+			WHERE account_id = ? AND protocol = ? AND folder = ? AND sort_rank >= ?`,
+			key.AccountID, key.Protocol, key.Folder, next); err != nil {
+			return fmt.Errorf("account: prune messages past the mailbox end: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO messages_cache_state (account_id, protocol, folder, coverage, exhausted, updated_at)
 		VALUES (?,?,?,?,?,?)
 		ON CONFLICT(account_id, protocol, folder) DO UPDATE SET
-			coverage = MAX(messages_cache_state.coverage, excluded.coverage),
+			coverage = excluded.coverage,
 			exhausted = excluded.exhausted,
 			updated_at = excluded.updated_at`,
-		key.AccountID, key.Protocol, key.Folder, next, ex, time.Now().UTC().Format(time.RFC3339))
-	if err != nil {
+		key.AccountID, key.Protocol, key.Folder, newCoverage, ex, time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return fmt.Errorf("account: record fetch: %w", err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 // ExistingUIDs returns the set of Message UIDs already cached for key —

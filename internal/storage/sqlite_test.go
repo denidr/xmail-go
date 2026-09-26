@@ -62,3 +62,22 @@ func TestOpen_ForeignKeysEnforced(t *testing.T) {
 		t.Error("insert with dangling account_id succeeded, want foreign key violation")
 	}
 }
+
+func TestOpen_SetsBusyTimeout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "xmail.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+
+	// A second process (service + CLI, or two replicas on one volume) must
+	// wait for the writer rather than fail with SQLITE_BUSY.
+	var timeout int
+	if err := db.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatalf("PRAGMA busy_timeout: %v", err)
+	}
+	if timeout != 5000 {
+		t.Errorf("busy_timeout = %d, want 5000", timeout)
+	}
+}

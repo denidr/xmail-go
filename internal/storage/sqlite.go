@@ -21,7 +21,10 @@ var migrationsFS embed.FS
 // directory, tracked in a schema_migrations table so re-running Open
 // against an already-migrated database is a no-op.
 func Open(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)")
+	// foreign_keys is per-connection in SQLite (off by default); busy_timeout
+	// makes a second process (service + CLI, or two replicas on one volume)
+	// wait for a writer instead of failing with SQLITE_BUSY.
+	db, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("storage: open %s: %w", path, err)
 	}
