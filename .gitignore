@@ -1,0 +1,15 @@
+# Build output
+/bin/
+/xmail
+/xmail.exe
+
+# Local data / secrets
+*.db
+*.db-journal
+.env
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+/dist/

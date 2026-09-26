@@ -1,0 +1,18 @@
+-- Fixes a real ordering bug (found by external code review, see
+-- PLAN.md §10.1 #NEW): UpsertMessages shares one `fetched_at` value
+-- across an entire batch, so ORDER BY fetched_at DESC, rowid DESC fell
+-- back to rowid DESC to break ties within a batch — but SQLite assigns
+-- rowids in insertion order, and UpsertMessages inserts messages
+-- newest-first (matching Fetch's own newest-first order), so the
+-- newest message got the *smallest* rowid in the batch. rowid DESC
+-- then put it *last*, silently reversing message order to oldest-first
+-- as soon as the cache was populated (GET /messages was newest-first
+-- only on a cold cache).
+--
+-- sort_rank is set explicitly by UpsertMessages to each message's
+-- position within its own Fetch result (higher = newer), independent
+-- of SQLite's rowid assignment or ON CONFLICT UPDATE semantics (an
+-- UPDATE preserves the row's original rowid, which would otherwise
+-- keep reflecting whatever batch first inserted that row, not the
+-- most recent one).
+ALTER TABLE messages_cache ADD COLUMN sort_rank INTEGER NOT NULL DEFAULT 0;
