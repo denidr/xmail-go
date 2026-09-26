@@ -42,6 +42,9 @@ _Avoid_: cache size, depth
 **Exhausted**:
 As of the last dial, the whole mailbox is in the Message cache, so a Fetch window inside the covered prefix is answerable from it without dialing. A short fetch that carries messages sets this; an empty fetch below the top does not (it only bounds the mailbox); a later full page reaching past the known end clears it (the mailbox grew). A fetch that starts below the cached window is ignored.
 
+**Verified from**:
+The lowest position from the top of the mailbox that the most recent dial vouched for: 0 after a top fetch, the fetched page's own offset after a deeper one. A Fetch window that starts below it dials, because the rows there were written by an older dial and the mailbox may have changed at the top since.
+
 **Check**:
 A poll of an account's mailbox that reports the server's unread count plus how many of the most recent Messages are not yet in the Message cache.
 _Avoid_: poll, refresh

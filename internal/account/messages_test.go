@@ -222,7 +222,7 @@ func TestMessageCache_Coverage(t *testing.T) {
 	if err := cache.Record(ctx, key, Window{Limit: 10}, 10); err != nil {
 		t.Fatalf("Record() (smaller page) error = %v", err)
 	}
-	coverage, exhausted, err := cache.state(ctx, key)
+	coverage, exhausted, _, err := cache.state(ctx, key)
 	if err != nil {
 		t.Fatalf("state() error = %v", err)
 	}
@@ -589,7 +589,7 @@ func TestMessageCache_Record_OffsetDoesNotInflateCoverage(t *testing.T) {
 	if err := cache.Record(ctx, key, Window{Limit: 20, Offset: 100}, 5); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
-	if coverage, exhausted, err := cache.state(ctx, key); err != nil || coverage != 0 || exhausted {
+	if coverage, exhausted, _, err := cache.state(ctx, key); err != nil || coverage != 0 || exhausted {
 		t.Errorf("state after deep page = (coverage=%d, exhausted=%v, err=%v), want (0, false, nil)", coverage, exhausted, err)
 	}
 
@@ -600,7 +600,7 @@ func TestMessageCache_Record_OffsetDoesNotInflateCoverage(t *testing.T) {
 	if err := cache.Record(ctx, key, Window{Limit: 20, Offset: 100}, 5); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
-	if coverage, exhausted, err := cache.state(ctx, key); err != nil || coverage != 20 || exhausted {
+	if coverage, exhausted, _, err := cache.state(ctx, key); err != nil || coverage != 20 || exhausted {
 		t.Errorf("state after top+deep = (coverage=%d, exhausted=%v, err=%v), want (20, false, nil)", coverage, exhausted, err)
 	}
 }
@@ -744,14 +744,16 @@ func TestService_FetchMessages_AdjacentPagesServeInMailboxOrder(t *testing.T) {
 		t.Fatalf("fetchCalls = %d, want 2 (two live pages)", calls)
 	}
 
-	// The 40-message window is now covered, so it is served from cache —
-	// and must be in mailbox order.
+	// The two pages cover 40 messages, but the second was fetched at offset
+	// 20 and never vouched for the rows above it, so a window starting at the
+	// top dials once more (re-verifying the whole prefix) instead of risking
+	// an older row served above a fresher one.
 	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 40, 0, false)
 	if err != nil {
 		t.Fatalf("FetchMessages(40,0) error = %v", err)
 	}
-	if calls != 2 {
-		t.Errorf("fetchCalls = %d, want still 2 (window covered by the two pages)", calls)
+	if calls != 3 {
+		t.Errorf("fetchCalls = %d, want 3 (a top window re-verifies after a deep page)", calls)
 	}
 	if len(msgs) != 40 {
 		t.Fatalf("FetchMessages(40,0) len = %d, want 40", len(msgs))
@@ -759,6 +761,25 @@ func TestService_FetchMessages_AdjacentPagesServeInMailboxOrder(t *testing.T) {
 	for i := range msgs {
 		if want := fmt.Sprintf("u%d", i); msgs[i].UID != want {
 			t.Errorf("msgs[%d].UID = %q, want %q (served window must be in mailbox order)", i, msgs[i].UID, want)
+			break
+		}
+	}
+
+	// A window that starts where the deepest dial reached is still served
+	// from cache, in mailbox order.
+	msgs, err = svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 20, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(20,20) error = %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("fetchCalls = %d, want still 3 (window inside the verified prefix)", calls)
+	}
+	if len(msgs) != 20 {
+		t.Fatalf("FetchMessages(20,20) len = %d, want 20", len(msgs))
+	}
+	for i := range msgs {
+		if want := fmt.Sprintf("u%d", 20+i); msgs[i].UID != want {
+			t.Errorf("msgs[%d].UID = %q, want %q", i, msgs[i].UID, want)
 			break
 		}
 	}
@@ -1308,7 +1329,7 @@ func TestMessageCache_Record_ShortPageDropsRowsPastTheEnd(t *testing.T) {
 	if err := cache.Record(ctx, key, Window{Limit: 20}, 7); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
-	if coverage, exhausted, err := cache.state(ctx, key); err != nil || coverage != 7 || !exhausted {
+	if coverage, exhausted, _, err := cache.state(ctx, key); err != nil || coverage != 7 || !exhausted {
 		t.Errorf("state = (coverage=%d, exhausted=%v, err=%v), want (7, true, nil)", coverage, exhausted, err)
 	}
 	got, err := cache.list(ctx, key, Window{Limit: 20})
@@ -1458,7 +1479,7 @@ func TestMessageCache_EmptyTopPageInvalidatesStaleRows(t *testing.T) {
 	if err := cache.Upsert(ctx, key, nil, 0); err != nil {
 		t.Fatalf("Upsert(empty) error = %v", err)
 	}
-	if coverage, exhausted, err := cache.state(ctx, key); err != nil || coverage != 0 || exhausted {
+	if coverage, exhausted, _, err := cache.state(ctx, key); err != nil || coverage != 0 || exhausted {
 		t.Errorf("state = (coverage=%d, exhausted=%v, err=%v), want (0, false, nil)", coverage, exhausted, err)
 	}
 	got, served, err := cache.Get(ctx, key, Window{Limit: 5})
@@ -1496,7 +1517,7 @@ func TestMessageCache_GetDialsWhenRowsFellBehindCoverage(t *testing.T) {
 	if err := cache.Record(ctx, key, Window{Limit: 50}, 3); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
-	if coverage, exhausted, err := cache.state(ctx, key); err != nil || coverage != 3 || !exhausted {
+	if coverage, exhausted, _, err := cache.state(ctx, key); err != nil || coverage != 3 || !exhausted {
 		t.Fatalf("state = (coverage=%d, exhausted=%v, err=%v), want (3, true, nil) — the interleaving this test pins", coverage, exhausted, err)
 	}
 
@@ -1554,5 +1575,110 @@ func TestService_FetchMessages_MaxLimitDoesNotTruncate(t *testing.T) {
 	}
 	if len(msgs) != 49 {
 		t.Errorf("len = %d, want 49 (the live page from offset 1)", len(msgs))
+	}
+}
+
+// TestService_FetchMessages_DeepPageDoesNotBlessThePrefix: a page fetched at
+// offset > 0 vouches only for the ranks it covered. Serving a window above it
+// would mix rows written by an older dial into a mailbox that has since
+// changed at the top — an order the server never had.
+func TestService_FetchMessages_DeepPageDoesNotBlessThePrefix(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	mailbox := []string{"A"}
+	fetch := func(limit, offset int) []mailer.Message {
+		if offset >= len(mailbox) {
+			return nil
+		}
+		end := offset + limit
+		if end > len(mailbox) {
+			end = len(mailbox)
+		}
+		out := make([]mailer.Message, 0, end-offset)
+		for i := offset; i < end; i++ {
+			out = append(out, mailer.Message{UID: mailbox[i], Folder: "INBOX"})
+		}
+		return out
+	}
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{fetchFn: fetch}
+	})
+
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 1, 0, false); err != nil {
+		t.Fatalf("FetchMessages(1,0) error = %v", err)
+	}
+
+	// A is deleted and two newer messages arrive, so rank 0 is now B.
+	mailbox = []string{"B", "C"}
+
+	// A deep page writes C at rank 1 — right where it belongs — but says
+	// nothing about rank 0, which still holds the deleted A.
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 1, false); err != nil {
+		t.Fatalf("FetchMessages(20,1) error = %v", err)
+	}
+
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 10, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(10,0) error = %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("len = %d, want 2", len(msgs))
+	}
+	for i, want := range mailbox {
+		if msgs[i].UID != want {
+			t.Errorf("msgs[%d].UID = %q, want %q (a deep page must not vouch for the ranks above it)", i, msgs[i].UID, want)
+			break
+		}
+	}
+}
+
+// TestMessageCache_UpsertRejectsAPageThatOnlyTouchesUncachedRanks pins the
+// coherence check's "a cached rank must hold the page's message" half on its
+// own. A replaced mailbox whose page carries only uncached messages is
+// invisible to the other half; Record's prune repairs the rows afterwards, so
+// this has to call Upsert directly to see it.
+func TestMessageCache_UpsertRejectsAPageThatOnlyTouchesUncachedRanks(t *testing.T) {
+	ctx := context.Background()
+	repo, cache := newTestCache(t)
+	created, err := repo.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	key := CacheKey{AccountID: created.ID, Protocol: ProtocolIMAP, Folder: "INBOX"}
+
+	page := func(prefix string, n int) []mailer.Message {
+		out := make([]mailer.Message, n)
+		for i := range out {
+			out[i] = mailer.Message{UID: fmt.Sprintf("%s%d", prefix, i), Folder: "INBOX"}
+		}
+		return out
+	}
+	if err := cache.Upsert(ctx, key, page("u", 20), 0); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	// The mailbox was replaced: the new page's messages are all uncached, but
+	// its ranks 0..4 still hold the old ones.
+	if err := cache.Upsert(ctx, key, page("w", 5), 0); err != nil {
+		t.Fatalf("Upsert(replaced) error = %v", err)
+	}
+
+	got, err := cache.list(ctx, key, Window{Limit: 50})
+	if err != nil {
+		t.Fatalf("list() error = %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("cache holds %d rows, want the 5 new ones only (the page disagrees with cached ranks 0..4)", len(got))
+	}
+	for i := range got {
+		if want := fmt.Sprintf("w%d", i); got[i].UID != want {
+			t.Errorf("got[%d].UID = %q, want %q", i, got[i].UID, want)
+			break
+		}
 	}
 }

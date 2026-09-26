@@ -1,0 +1,19 @@
+-- Records how far down the cached prefix the most recent dial actually
+-- looked.
+--
+-- Coverage/Exhausted bound what the cache holds, but not how much of it
+-- the last fetch vouched for: Upsert's coherence check only compares the
+-- ranks a page actually covers, so a page fetched at offset > 0 can
+-- extend the prefix without disproving anything about the ranks below
+-- it. If the mailbox changed at the top in between (mail deleted, new
+-- mail arrived), those older rows stay put, and a served window mixes
+-- them with fresher rows in an order the server never had — e.g. cache
+-- [A] then mailbox [B, C], a page at offset 1 writes C at rank 1, and a
+-- later offset=0 read serves [A, C]. See
+-- TestService_FetchMessages_DeepPageDoesNotBlessThePrefix.
+--
+-- MessageCache.Record stores the page's offset here (0 for a top page,
+-- which vouches for the whole prefix) and Get dials instead of serving a
+-- window that starts below it. Existing rows default to 0 — the previous
+-- behaviour, and safe because it only trusts more than this change does.
+ALTER TABLE messages_cache_state ADD COLUMN verified_from INTEGER NOT NULL DEFAULT 0;

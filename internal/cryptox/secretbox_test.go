@@ -88,6 +88,26 @@ func TestDecrypt_TamperedCiphertextFails(t *testing.T) {
 	}
 }
 
+// TestDecrypt_WrongLengthNonceErrorsNotPanics: gcm.Open panics when the nonce
+// is not its NonceSize, and the stored nonce is just a BLOB column — a row
+// written by another tool or version must surface as an error, not a crash.
+func TestDecrypt_WrongLengthNonceErrorsNotPanics(t *testing.T) {
+	key := testKey()
+	ciphertext, _, err := Encrypt(key, []byte("secret"))
+	if err != nil {
+		t.Fatalf("Encrypt() error = %v", err)
+	}
+	for _, nonce := range [][]byte{nil, {}, make([]byte, 8), make([]byte, 16)} {
+		plain, err := Decrypt(key, ciphertext, nonce)
+		if err == nil {
+			t.Errorf("Decrypt(nonce of %d bytes) = %q, want error", len(nonce), plain)
+		}
+		if plain != nil {
+			t.Errorf("Decrypt(nonce of %d bytes) returned plaintext %q, want nil", len(nonce), plain)
+		}
+	}
+}
+
 func TestEncrypt_InvalidKeyLength(t *testing.T) {
 	if _, _, err := Encrypt([]byte("tooshort"), []byte("data")); err == nil {
 		t.Error("Encrypt() with non-32-byte key succeeded, want error")

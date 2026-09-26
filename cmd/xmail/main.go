@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"xmail/internal/app"
 	"xmail/internal/config"
@@ -23,7 +24,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	log.Printf("xmail: starting (headless mode), version=%s", version)

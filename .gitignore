@@ -2,6 +2,7 @@
 /bin/
 /xmail
 /xmail.exe
+coverage.out
 
 # Local data / secrets
 *.db

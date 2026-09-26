@@ -10,9 +10,10 @@ import (
 	"fmt"
 )
 
-// Encrypt encrypts plain using AES-256-GCM under key (must be exactly
-// 32 bytes), returning the ciphertext and the random nonce used. The
-// nonce must be stored alongside the ciphertext and passed to Decrypt.
+// Encrypt encrypts plain using AES-GCM under key (an AES key length:
+// 16, 24 or 32 bytes — config requires 32), returning the ciphertext
+// and the random nonce used. The nonce must be stored alongside the
+// ciphertext and passed to Decrypt.
 func Encrypt(key, plain []byte) (ciphertext, nonce []byte, err error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -41,6 +42,11 @@ func Decrypt(key, ciphertext, nonce []byte) (plain []byte, err error) {
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, fmt.Errorf("cryptox: new gcm: %w", err)
+	}
+	if len(nonce) != gcm.NonceSize() {
+		// gcm.Open panics on a wrong-length nonce, and the nonce comes from
+		// a plain BLOB column — an unusable one is an error, not a crash.
+		return nil, fmt.Errorf("cryptox: nonce must be %d bytes, got %d", gcm.NonceSize(), len(nonce))
 	}
 	plain, err = gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {

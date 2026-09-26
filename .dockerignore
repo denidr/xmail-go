@@ -4,3 +4,5 @@
 .env
 *.md
 bin/
+dist/
+coverage.out

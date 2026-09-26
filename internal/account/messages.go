@@ -62,9 +62,17 @@ func (c *MessageCache) Get(ctx context.Context, key CacheKey, w Window) ([]maile
 	if w.Offset < 0 || w.Limit <= 0 {
 		return nil, false, nil
 	}
-	coverage, exhausted, err := c.state(ctx, key)
+	coverage, exhausted, verifiedFrom, err := c.state(ctx, key)
 	if err != nil {
 		return nil, false, err
+	}
+	// The ranks below VerifiedFrom were written by an older dial that did
+	// not reach them, so the mailbox could have changed at the top since
+	// without any fetch noticing — serving them would mix older rows into a
+	// window above fresher ones. Dial instead (see
+	// TestService_FetchMessages_DeepPageDoesNotBlessThePrefix).
+	if w.Offset < verifiedFrom {
+		return nil, false, nil
 	}
 	// A window strictly inside the covered prefix is answerable. Exhausted
 	// also lets one run off that prefix's end — the mailbox ends there — but
@@ -197,7 +205,11 @@ func (c *MessageCache) Upsert(ctx context.Context, key CacheKey, msgs []mailer.M
 			stale = true
 		}
 	}
-	// The cache is a prefix [0, prefix): ranks 0..prefix-1 are present.
+	// The cache is a prefix [0, Coverage): ranks 0..Coverage-1 are present.
+	// The rows are kept hole-free from 0 (Upsert refuses to create gaps), but
+	// only the ranks from VerifiedFrom up are vouched for by the latest dial
+	// (see Record and migration 0006) — Get dials for anything below, so the
+	// rows under it are inert until a top page rewrites them.
 	prefix := 0
 	for {
 		if _, ok := uidAtRank[prefix]; !ok {
@@ -297,7 +309,7 @@ func (c *MessageCache) Record(ctx context.Context, key CacheKey, w Window, retur
 	if w.Offset < 0 || w.Limit <= 0 {
 		return nil
 	}
-	coverage, wasExhausted, err := c.state(ctx, key)
+	coverage, wasExhausted, _, err := c.state(ctx, key)
 	if err != nil {
 		return err
 	}
@@ -329,6 +341,12 @@ func (c *MessageCache) Record(ctx context.Context, key CacheKey, w Window, retur
 	if exhausted {
 		ex = 1
 	}
+	// This page vouches for the ranks it covered and nothing below them: a
+	// top page (offset 0) vouches for the whole prefix, a deeper page only
+	// from its own offset, because it cannot see whether the mailbox changed
+	// above it (see migration 0006 and
+	// TestService_FetchMessages_DeepPageDoesNotBlessThePrefix).
+	verifiedFrom := w.Offset
 
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -345,13 +363,14 @@ func (c *MessageCache) Record(ctx context.Context, key CacheKey, w Window, retur
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO messages_cache_state (account_id, protocol, folder, coverage, exhausted, updated_at)
-		VALUES (?,?,?,?,?,?)
+		INSERT INTO messages_cache_state (account_id, protocol, folder, coverage, exhausted, verified_from, updated_at)
+		VALUES (?,?,?,?,?,?,?)
 		ON CONFLICT(account_id, protocol, folder) DO UPDATE SET
 			coverage = excluded.coverage,
 			exhausted = excluded.exhausted,
+			verified_from = excluded.verified_from,
 			updated_at = excluded.updated_at`,
-		key.AccountID, key.Protocol, key.Folder, newCoverage, ex, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		key.AccountID, key.Protocol, key.Folder, newCoverage, ex, verifiedFrom, time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return fmt.Errorf("account: record fetch: %w", err)
 	}
 	return tx.Commit()
@@ -395,21 +414,21 @@ func (c *MessageCache) MarkRead(ctx context.Context, key CacheKey, uid string) e
 	return nil
 }
 
-// state reads key's Coverage/Exhausted. A missing row means "nothing
-// known" — coverage 0, exhausted false, which forces Get to dial.
-func (c *MessageCache) state(ctx context.Context, key CacheKey) (coverage int, exhausted bool, err error) {
+// state reads key's Coverage/Exhausted/VerifiedFrom. A missing row means
+// "nothing known" — the zero values force Get to dial.
+func (c *MessageCache) state(ctx context.Context, key CacheKey) (coverage int, exhausted bool, verifiedFrom int, err error) {
 	row := c.db.QueryRowContext(ctx, `
-		SELECT coverage, exhausted FROM messages_cache_state
+		SELECT coverage, exhausted, verified_from FROM messages_cache_state
 		WHERE account_id = ? AND protocol = ? AND folder = ?`,
 		key.AccountID, key.Protocol, key.Folder)
 	var ex int
-	switch err := row.Scan(&coverage, &ex); err {
+	switch err := row.Scan(&coverage, &ex, &verifiedFrom); err {
 	case nil:
-		return coverage, ex != 0, nil
+		return coverage, ex != 0, verifiedFrom, nil
 	case sql.ErrNoRows:
-		return 0, false, nil
+		return 0, false, 0, nil
 	default:
-		return 0, false, fmt.Errorf("account: cache state: %w", err)
+		return 0, false, 0, fmt.Errorf("account: cache state: %w", err)
 	}
 }
 

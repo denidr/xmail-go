@@ -18,6 +18,7 @@ import (
 	"context"
 	"embed"
 	"log"
+	"net"
 	"os/exec"
 	"sync"
 
@@ -121,7 +122,7 @@ func (t *trayApp) onReady() {
 				t.uninstallService()
 
 			case <-mDashboard.ClickedCh:
-				openBrowser("http://localhost" + t.cfg.ListenAddr)
+				openBrowser(dashboardURL(t.cfg.ListenAddr))
 
 			case <-mQuit.ClickedCh:
 				t.stop()
@@ -186,6 +187,17 @@ func (t *trayApp) uninstallService() {
 		return
 	}
 	log.Println("xmail-tray: Windows Service uninstalled")
+}
+
+// dashboardURL turns a listen address into a browsable localhost URL:
+// ":8080" -> "http://localhost:8080", and the wildcard or bound forms
+// ("0.0.0.0:8080", "127.0.0.1:8080", "[::]:8080") resolve to localhost
+// too. An address net cannot split is used as-is.
+func dashboardURL(listenAddr string) string {
+	if _, port, err := net.SplitHostPort(listenAddr); err == nil && port != "" {
+		return "http://localhost:" + port
+	}
+	return "http://localhost" + listenAddr
 }
 
 // openBrowser shells out to the OS default-browser handler. Best

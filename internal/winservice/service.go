@@ -115,6 +115,12 @@ func New(cfg config.Config, version string) (service.Service, error) {
 func buildServiceConfig(cfg config.Config) (*service.Config, error) {
 	env := cfg.Environ()
 
+	if cfg.DBPath == "" {
+		// config.Load always supplies a default, so this is a hand-built
+		// Config: filepath.Abs("") is the cwd, which would leave the service
+		// trying to open a directory. Fail loudly instead.
+		return nil, fmt.Errorf("winservice: XMAIL_DB_PATH is empty")
+	}
 	absDBPath, err := filepath.Abs(cfg.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("winservice: resolve absolute XMAIL_DB_PATH: %w", err)
