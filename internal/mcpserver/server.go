@@ -197,6 +197,10 @@ func (s *Server) handleFetchEmails(ctx context.Context, req mcp.CallToolRequest,
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr(toolFetchEmails+" failed", err), nil
 	}
+	// An empty mailbox must reach the client as [], not null (same as REST).
+	if msgs == nil {
+		msgs = []mailer.Message{}
+	}
 	return mcp.NewToolResultStructuredOnly(msgs), nil
 }
 

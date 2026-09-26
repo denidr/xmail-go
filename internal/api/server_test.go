@@ -259,6 +259,33 @@ func TestCheck_ResponseShape(t *testing.T) {
 	}
 }
 
+// TestMessagesList_EmptyMailboxIsEmptyArray: an empty mailbox must come back
+// as data:[] — a nil slice serializes as null, which breaks a client that
+// iterates the list (the account list already normalizes this way).
+func TestMessagesList_EmptyMailboxIsEmptyArray(t *testing.T) {
+	s := newTestServer(t)
+	h := s.Handler()
+	id := createTestAccount(t, h)
+
+	registerIMAP(s, func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {
+		return &mockIMAPClient{} // Fetch returns nil
+	})
+
+	rec := doRequest(t, h, http.MethodGet, "/accounts/"+id+"/messages", testAPIKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var env struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if string(env.Data) != "[]" {
+		t.Errorf("data = %s, want [] (an empty mailbox must not serialize as null)", env.Data)
+	}
+}
+
 func TestSend_ValidatesRecipients(t *testing.T) {
 	s := newTestServer(t)
 	h := s.Handler()

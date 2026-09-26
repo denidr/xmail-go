@@ -285,6 +285,9 @@ func TestIntegration_Fetch(t *testing.T) {
 	if msgs[0].Subject != "Newest" || msgs[1].Subject != "Middle" {
 		t.Errorf("Fetch() order = [%q, %q], want [Newest, Middle]", msgs[0].Subject, msgs[1].Subject)
 	}
+	if msgs[0].Folder != "INBOX" || msgs[1].Folder != "INBOX" {
+		t.Errorf("Fetch() folders = [%q, %q], want the fetched folder %q on each", msgs[0].Folder, msgs[1].Folder, "INBOX")
+	}
 	if msgs[0].IsRead {
 		t.Error("msgs[0] (seq 3, unseen) reported as read")
 	}

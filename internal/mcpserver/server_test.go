@@ -357,3 +357,38 @@ func TestTransport_CheckNewEmailsWireKeys(t *testing.T) {
 		t.Errorf("wire new_count = %v, want 1 (first check, nothing cached yet)", sc["new_count"])
 	}
 }
+
+// TestTransport_FetchEmailsEmptyIsArray: an empty mailbox must reach the
+// client as an empty JSON array, not null — the same contract REST's
+// /messages has (see the api package's sibling test).
+func TestTransport_FetchEmailsEmptyIsArray(t *testing.T) {
+	ctx := context.Background()
+	s, svc := newTestServer(t)
+
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	registerIMAPFetcher(svc, func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{} // Fetch returns nil
+	})
+
+	c := dialMCP(t, s)
+	res, err := c.CallTool(ctx, mcp.CallToolRequest{Params: mcp.CallToolParams{
+		Name:      toolFetchEmails,
+		Arguments: map[string]any{"account_id": created.ID},
+	}})
+	if err != nil {
+		t.Fatalf("CallTool() error = %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("CallTool() IsError = true, content = %+v", res.Content)
+	}
+	sc, ok := res.StructuredContent.([]any)
+	if !ok {
+		t.Fatalf("StructuredContent type = %T, want []any (an empty mailbox must serialize as [])", res.StructuredContent)
+	}
+	if len(sc) != 0 {
+		t.Errorf("StructuredContent len = %d, want 0", len(sc))
+	}
+}

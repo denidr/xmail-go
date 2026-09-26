@@ -119,6 +119,11 @@ func DefaultFolder(folder string) string {
 // test in PLAN.md Fase 3/8 notes). Shared by mailer/imap and
 // mailer/pop3 so the windowing logic is defined exactly once.
 func WindowRange(total, limit, offset int) (start, end int, ok bool) {
+	if offset < 0 {
+		// Not a position in a mailbox: refuse rather than compute a range
+		// that runs past the end of it (see TestWindowRange).
+		return 0, 0, false
+	}
 	end = total - offset
 	if end <= 0 || limit <= 0 {
 		return 0, 0, false

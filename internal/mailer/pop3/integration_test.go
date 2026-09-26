@@ -180,6 +180,9 @@ func TestIntegration_Fetch_POP3(t *testing.T) {
 	if msgs[0].From != "c@example.com" {
 		t.Errorf("msgs[0].From = %q, want %q", msgs[0].From, "c@example.com")
 	}
+	if msgs[0].Folder != "INBOX" {
+		t.Errorf("msgs[0].Folder = %q, want %q (POP3 is folder-less, see canonicalFolder)", msgs[0].Folder, "INBOX")
+	}
 }
 
 func TestIntegration_Fetch_POP3_Offset(t *testing.T) {

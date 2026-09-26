@@ -38,7 +38,7 @@ You need a base URL and an API key. Don't guess — get them from the user or th
 | `unauthorized` | 401 | Missing/wrong `X-API-Key` |
 | `validation_failed` | 400 | Bad input (missing field, bad `tls_mode`, unknown protocol, etc.) |
 | `not_found` | 404 | Account ID doesn't exist |
-| `internal_error` | 500 | Something failed downstream (dial error, mailer not configured, etc.) — check `error.message` |
+| `internal_error` | 500 | Something failed downstream unexpectedly (dial/parse error, cache or storage failure, etc.) — check `error.message`. An unconfigured protocol is *not* this: it returns `validation_failed` 400. |
 
 ### Health check (no auth)
 

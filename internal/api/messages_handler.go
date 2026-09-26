@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"xmail/internal/account"
+	"xmail/internal/mailer"
 )
 
 func queryIntOr(r *http.Request, key string, fallback int) int {
@@ -44,6 +45,12 @@ func (s *Server) handleMessagesList(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErrFor(w, err)
 		return
+	}
+	// An empty mailbox must serialize as [] , not null — a client that
+	// iterates data would break only on that one day. The account list
+	// normalizes the same way (see handleList's make(..., 0, len)).
+	if msgs == nil {
+		msgs = []mailer.Message{}
 	}
 	writeData(w, http.StatusOK, msgs)
 }
