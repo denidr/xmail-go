@@ -98,6 +98,11 @@ func (c *MessageCache) Get(ctx context.Context, key CacheKey, w Window) ([]maile
 // has no messages at all, so anything cached for it is stale (see
 // TestService_FetchMessages_EmptyMailboxDoesNotServeStaleRows).
 func (c *MessageCache) Upsert(ctx context.Context, key CacheKey, msgs []mailer.Message, offset int) error {
+	if len(msgs) == 0 && offset != 0 {
+		// A deep page past the end proves nothing about the prefix and has
+		// no ranks to compare — don't even open a transaction for it.
+		return nil
+	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("account: begin tx: %w", err)
@@ -105,12 +110,10 @@ func (c *MessageCache) Upsert(ctx context.Context, key CacheKey, msgs []mailer.M
 	defer tx.Rollback()
 
 	if len(msgs) == 0 {
-		// An empty page carries no ranks for the coherence check below to
-		// compare against, so the empty-top case is handled here.
-		if offset == 0 {
-			if err := invalidateCache(ctx, tx, key); err != nil {
-				return err
-			}
+		// A top fetch that returned nothing proves the mailbox is empty, so
+		// any cached rows for it are stale.
+		if err := invalidateCache(ctx, tx, key); err != nil {
+			return err
 		}
 		return tx.Commit()
 	}

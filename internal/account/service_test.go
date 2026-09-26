@@ -141,6 +141,60 @@ func (m mockFetcher) Fetch(ctx context.Context, folder string, limit, offset int
 }
 func (m mockFetcher) TestConnection(ctx context.Context) error { return m.err }
 
+func TestService_Send_UsesAccountEmailAsFrom(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var gotFrom string
+	registerSMTP(svc, func(cfg ConnectionConfig, fromAddress, username, secret string) mailer.Sender {
+		gotFrom = fromAddress
+		return mockSender{}
+	})
+	if err := svc.Send(ctx, created.ID, mailer.OutgoingMessage{To: []string{"a@b.c"}}); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if gotFrom != created.Email {
+		t.Errorf("Send built a sender with fromAddress = %q, want the account email %q", gotFrom, created.Email)
+	}
+}
+
+// TestService_POP3_HasNoCheckerOrMarker locks in that a folder-less, flag-less
+// protocol degrades cleanly: no unread count, and mark-read is a validation
+// error — rather than a panic or a silent no-op.
+func TestService_POP3_HasNoCheckerOrMarker(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+
+	acct := sampleAccount()
+	acct.POP3 = &ConnectionConfig{Host: "pop.example.com", Port: 995, TLSMode: TLSModeTLS}
+	created, err := svc.Create(ctx, acct, "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	// mockFetcher implements Fetcher only (no Checker/Marker), like pop3.Client.
+	registerPOP3(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcher{}
+	})
+
+	unread, _, err := svc.CheckNew(ctx, created.ID, "pop3", "INBOX")
+	if err != nil {
+		t.Errorf("CheckNew(pop3) error = %v, want nil (merely no unread count)", err)
+	}
+	if unread != 0 {
+		t.Errorf("CheckNew(pop3) unread = %d, want 0 (POP3 has no unseen-flag concept)", unread)
+	}
+
+	if err := svc.MarkRead(ctx, created.ID, "pop3", "INBOX", "1"); !errors.Is(err, ErrValidation) {
+		t.Errorf("MarkRead(pop3) error = %v, want ErrValidation", err)
+	}
+}
+
 func TestService_TestConnection(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t)

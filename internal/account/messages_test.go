@@ -1196,3 +1196,75 @@ func TestService_FetchMessages_DeepPagePastPrefixIsNotServedAsOrphans(t *testing
 		}
 	}
 }
+
+// TestService_FetchMessages_FullyReplacedMailboxDoesNotServeDuplicateRanks
+// pins the check that a cached rank must hold the page's message: when the
+// mailbox is replaced wholesale (and no empty period is ever observed), every
+// message in the new page is uncached, yet rank 0 is still held by a deleted
+// message — so only that check can detect the shift.
+func TestService_FetchMessages_FullyReplacedMailboxDoesNotServeDuplicateRanks(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	mailbox := make([]string, 20)
+	for i := range mailbox {
+		mailbox[i] = fmt.Sprintf("u%d", i)
+	}
+	fetch := func(limit, offset int) []mailer.Message {
+		if offset >= len(mailbox) {
+			return nil
+		}
+		end := offset + limit
+		if end > len(mailbox) {
+			end = len(mailbox)
+		}
+		out := make([]mailer.Message, 0, end-offset)
+		for i := offset; i < end; i++ {
+			out = append(out, mailer.Message{UID: mailbox[i], Folder: "INBOX"})
+		}
+		return out
+	}
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{fetchFn: fetch}
+	})
+
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false); err != nil {
+		t.Fatalf("FetchMessages(20,0) error = %v", err)
+	}
+
+	// The mailbox is replaced by a shorter one, with no observed empty state.
+	mailbox = []string{"w0", "w1", "w2", "w3", "w4"}
+
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, true)
+	if err != nil {
+		t.Fatalf("FetchMessages(20,0,refresh) error = %v", err)
+	}
+	if len(msgs) != 5 {
+		t.Fatalf("len = %d, want 5", len(msgs))
+	}
+	for i, want := range mailbox {
+		if msgs[i].UID != want {
+			t.Errorf("msgs[%d].UID = %q, want %q", i, msgs[i].UID, want)
+			break
+		}
+	}
+
+	// A cached read must not interleave the deleted messages.
+	msgs, err = svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(20,0) (2nd) error = %v", err)
+	}
+	if len(msgs) != 5 {
+		t.Fatalf("2nd len = %d, want 5 (deleted messages must not survive)", len(msgs))
+	}
+	for i, want := range mailbox {
+		if msgs[i].UID != want {
+			t.Errorf("2nd msgs[%d].UID = %q, want %q (duplicate-rank interleave)", i, msgs[i].UID, want)
+			break
+		}
+	}
+}
