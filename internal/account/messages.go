@@ -104,35 +104,56 @@ func (c *MessageCache) Upsert(ctx context.Context, key CacheKey, msgs []mailer.M
 	}
 	defer tx.Rollback()
 
-	// The page's first message should sit at rank `offset`. If the cache
-	// disagrees — a different message occupies that rank, or this message
-	// is cached at a different rank — the mailbox shifted under the cache
-	// (new mail arrived at the top, or mail was deleted), so every cached
-	// row's position is stale: discard the rows and their
-	// Coverage/Exhausted rather than let stale positions mix into a served
-	// window (see TestService_FetchMessages_NewMailAtTop*).
-	stale := false
-	anchors, err := tx.QueryContext(ctx, `
+	// Coherence check: in a valid cache every row's sort_rank equals that
+	// message's mailbox position. This page records positions
+	// [offset, offset+len(msgs)); if the cache disagrees about any of them
+	// — a different message at one of those ranks, or a page message
+	// cached at a different rank (including below the page, which would
+	// leave a hole in the covered prefix when moved) — the mailbox shifted
+	// under the cache (new mail arrived, or mail was deleted), so the
+	// key's rows and its Coverage/Exhausted are discarded rather than let
+	// stale positions mix into a served window (see
+	// TestService_FetchMessages_NewMailAtTop*, ...DeepPageAfterLargeShift*).
+	cached, err := tx.QueryContext(ctx, `
 		SELECT uid, sort_rank FROM messages_cache
-		WHERE account_id = ? AND protocol = ? AND folder = ? AND (sort_rank = ? OR uid = ?)`,
-		key.AccountID, key.Protocol, key.Folder, offset, msgs[0].UID)
+		WHERE account_id = ? AND protocol = ? AND folder = ?`,
+		key.AccountID, key.Protocol, key.Folder)
 	if err != nil {
-		return fmt.Errorf("account: read cache anchors: %w", err)
+		return fmt.Errorf("account: read cached positions: %w", err)
 	}
-	for anchors.Next() {
+	rankByUID := make(map[string]int)
+	uidAtRank := make(map[int]string)
+	for cached.Next() {
 		var uid string
 		var rank int
-		if err := anchors.Scan(&uid, &rank); err != nil {
-			anchors.Close()
-			return fmt.Errorf("account: scan cache anchor: %w", err)
+		if err := cached.Scan(&uid, &rank); err != nil {
+			cached.Close()
+			return fmt.Errorf("account: scan cached position: %w", err)
 		}
-		if (rank == offset && uid != msgs[0].UID) || (uid == msgs[0].UID && rank != offset) {
+		rankByUID[uid] = rank
+		uidAtRank[rank] = uid
+	}
+	cached.Close()
+	if err := cached.Err(); err != nil {
+		return fmt.Errorf("account: read cached positions: %w", err)
+	}
+	stale := false
+	for i, m := range msgs {
+		rank := offset + i
+		if r, ok := rankByUID[m.UID]; ok && r != rank {
+			stale = true
+		}
+		if u, ok := uidAtRank[rank]; ok && u != m.UID {
 			stale = true
 		}
 	}
-	anchors.Close()
-	if err := anchors.Err(); err != nil {
-		return fmt.Errorf("account: read cache anchors: %w", err)
+	// The cache is a prefix [0, prefix): ranks 0..prefix-1 are present.
+	prefix := 0
+	for {
+		if _, ok := uidAtRank[prefix]; !ok {
+			break
+		}
+		prefix++
 	}
 	if stale {
 		for _, q := range []string{
@@ -143,6 +164,15 @@ func (c *MessageCache) Upsert(ctx context.Context, key CacheKey, msgs []mailer.M
 				return fmt.Errorf("account: invalidate stale cache: %w", err)
 			}
 		}
+		prefix = 0
+	}
+	// A page starting past the cached prefix can neither extend nor refresh
+	// it, so writing it would only create rows nothing can serve (orphans).
+	if offset > prefix {
+		if stale {
+			return tx.Commit() // keep the invalidation
+		}
+		return nil
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)

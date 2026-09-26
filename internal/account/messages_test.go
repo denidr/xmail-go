@@ -945,3 +945,142 @@ func TestService_FetchMessages_OffsetPageAfterNewMailDoesNotServeStaleRows(t *te
 		}
 	}
 }
+
+// TestService_FetchMessages_DeepPageAfterLargeShiftDoesNotHoleTheCache is
+// the counterpart where the shifted page's first message is brand new
+// (not cached) and its rank is empty, but the page still overlaps older
+// cached messages further down: writing it moves those rows out of the
+// covered prefix and leaves a rank hole there, yet coverage is unchanged.
+func TestService_FetchMessages_DeepPageAfterLargeShiftDoesNotHoleTheCache(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	mailbox := make([]string, 200) // mailbox[0] is the newest
+	for i := range mailbox {
+		mailbox[i] = fmt.Sprintf("u%d", i)
+	}
+	fetch := func(limit, offset int) []mailer.Message {
+		if offset >= len(mailbox) {
+			return nil
+		}
+		end := offset + limit
+		if end > len(mailbox) {
+			end = len(mailbox)
+		}
+		out := make([]mailer.Message, 0, end-offset)
+		for i := offset; i < end; i++ {
+			out = append(out, mailer.Message{UID: mailbox[i], Folder: "INBOX"})
+		}
+		return out
+	}
+	calls := 0
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{fetchCalls: &calls, fetchFn: fetch}
+	})
+
+	// Cache the newest 10 of the original mailbox.
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 10, 0, false); err != nil {
+		t.Fatalf("FetchMessages(10,0) error = %v", err)
+	}
+
+	// Twenty new messages arrive at the top.
+	mailbox = append([]string{
+		"n0", "n1", "n2", "n3", "n4", "n5", "n6", "n7", "n8", "n9",
+		"n10", "n11", "n12", "n13", "n14", "n15", "n16", "n17", "n18", "n19",
+	}, mailbox...)
+
+	// A deep page past the covered prefix: its top is new mail (uncached,
+	// empty rank) but it runs into the old cached messages below.
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 10, 15, false); err != nil {
+		t.Fatalf("FetchMessages(10,15) error = %v", err)
+	}
+
+	// The covered prefix must still be served correctly (or dialed) —
+	// never a hole-filled mix.
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 10, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(10,0) (2nd) error = %v", err)
+	}
+	if len(msgs) != 10 {
+		t.Fatalf("len = %d, want 10", len(msgs))
+	}
+	for i, want := range mailbox[:10] {
+		if msgs[i].UID != want {
+			t.Errorf("msgs[%d].UID = %q, want %q (a deep page must not hole the covered prefix)", i, msgs[i].UID, want)
+			break
+		}
+	}
+}
+
+// TestService_FetchMessages_MidMailboxDeletionDoesNotLeaveDuplicateRanks is
+// the regression test for a shift the page cannot see at its first rank: a
+// message deleted inside the fetched page moves every later cached row onto
+// a rank already held by its neighbour, which an unordered read would then
+// interleave.
+func TestService_FetchMessages_MidMailboxDeletionDoesNotLeaveDuplicateRanks(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	mailbox := make([]string, 200) // mailbox[0] is the newest
+	for i := range mailbox {
+		mailbox[i] = fmt.Sprintf("u%d", i)
+	}
+	fetch := func(limit, offset int) []mailer.Message {
+		if offset >= len(mailbox) {
+			return nil
+		}
+		end := offset + limit
+		if end > len(mailbox) {
+			end = len(mailbox)
+		}
+		out := make([]mailer.Message, 0, end-offset)
+		for i := offset; i < end; i++ {
+			out = append(out, mailer.Message{UID: mailbox[i], Folder: "INBOX"})
+		}
+		return out
+	}
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{fetchFn: fetch}
+	})
+
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false); err != nil {
+		t.Fatalf("FetchMessages(20,0) error = %v", err)
+	}
+
+	// A message is deleted in the middle of the cached page; the top is unchanged.
+	mailbox = append(mailbox[:5], mailbox[6:]...)
+
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, true)
+	if err != nil {
+		t.Fatalf("FetchMessages(20,0,refresh) error = %v", err)
+	}
+	if len(msgs) != 20 {
+		t.Fatalf("len = %d, want 20", len(msgs))
+	}
+	for i, want := range mailbox[:20] {
+		if msgs[i].UID != want {
+			t.Errorf("msgs[%d].UID = %q, want %q (a mid-page deletion must not leave stale/duplicate ranks)", i, msgs[i].UID, want)
+			break
+		}
+	}
+
+	// The next read must be consistent too (no duplicate-rank interleave).
+	msgs, err = svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(20,0) (2nd) error = %v", err)
+	}
+	for i, want := range mailbox[:20] {
+		if msgs[i].UID != want {
+			t.Errorf("2nd msgs[%d].UID = %q, want %q (duplicate-rank interleave)", i, msgs[i].UID, want)
+			break
+		}
+	}
+}
