@@ -5,6 +5,7 @@ package imap
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -128,13 +129,17 @@ func (c *Client) Fetch(ctx context.Context, folder string, limit, offset int) ([
 		return nil, fmt.Errorf("imap: fetch: %w", err)
 	}
 
+	// Sort newest-first by UID. UIDs are assigned in arrival order and
+	// only ever increase, so descending UID == newest first. The server's
+	// response order for the requested sequence range isn't guaranteed,
+	// so sort explicitly rather than assume it (the previous version only
+	// reversed the slice while claiming to "sort by UID" — see
+	// CODE_REVIEW.md round 5).
+	sort.Slice(buffers, func(i, j int) bool { return buffers[i].UID > buffers[j].UID })
+
 	out := make([]mailer.Message, 0, len(buffers))
 	for _, buf := range buffers {
 		out = append(out, toMessage(folder, buf))
-	}
-	// Server does not guarantee ordering; sort newest-first by UID.
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-		out[i], out[j] = out[j], out[i]
 	}
 	return out, nil
 }

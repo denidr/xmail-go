@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"xmail/internal/mailer"
 	"xmail/internal/storage"
 )
 
@@ -19,6 +20,21 @@ func newTestService(t *testing.T) *Service {
 	t.Cleanup(func() { db.Close() })
 	repo := NewRepository(db, bytes.Repeat([]byte{0x22}, 32))
 	return NewService(repo)
+}
+
+// registerSMTP/registerIMAP wire test doubles as SMTP/IMAP protocol
+// implementations — the tests mock the registered Protocol, not a
+// concrete mailer package (see PLAN.md §6.1).
+func registerSMTP(svc *Service, fn func(cfg ConnectionConfig, fromAddress, username, secret string) mailer.Sender) {
+	svc.RegisterProtocol(ProtocolSMTP, Protocol{Sender: fn})
+}
+
+func registerIMAP(svc *Service, fn func(cfg ConnectionConfig, username, secret string) mailer.Fetcher) {
+	svc.RegisterProtocol(ProtocolIMAP, Protocol{Fetcher: fn})
+}
+
+func registerPOP3(svc *Service, fn func(cfg ConnectionConfig, username, secret string) mailer.Fetcher) {
+	svc.RegisterProtocol(ProtocolPOP3, Protocol{Fetcher: fn})
 }
 
 func TestValidate(t *testing.T) {
@@ -106,13 +122,24 @@ func TestService_Update_SecretOptional(t *testing.T) {
 	}
 }
 
-// mockTester is a test double for account.ConnTester, standing in for a
-// real mailer.Sender/Fetcher's TestConnection method without any
-// network I/O — this is the point of the ConnTester interface (see
-// PLAN.md §6.1: account.Service unit tests mock mailer entirely).
-type mockTester struct{ err error }
+// mockSender is a test double for mailer.Sender, standing in for a real
+// smtp.Client without any network I/O — Service tests mock the
+// registered Protocol's constructor entirely (see PLAN.md §6.1).
+type mockSender struct {
+	err error
+}
 
-func (m mockTester) TestConnection(ctx context.Context) error { return m.err }
+func (m mockSender) Send(ctx context.Context, msg mailer.OutgoingMessage) error { return nil }
+func (m mockSender) TestConnection(ctx context.Context) error                   { return m.err }
+
+// mockFetcher is a test double for mailer.Fetcher (fetch-only
+// protocols, i.e. imap/pop3's branch of TestConnection).
+type mockFetcher struct{ err error }
+
+func (m mockFetcher) Fetch(ctx context.Context, folder string, limit, offset int) ([]mailer.Message, error) {
+	return nil, nil
+}
+func (m mockFetcher) TestConnection(ctx context.Context) error { return m.err }
 
 func TestService_TestConnection(t *testing.T) {
 	ctx := context.Background()
@@ -123,28 +150,50 @@ func TestService_TestConnection(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	t.Run("no tester wired", func(t *testing.T) {
+	t.Run("protocol not registered", func(t *testing.T) {
 		if err := svc.TestConnection(ctx, created.ID, "smtp"); err == nil {
-			t.Error("TestConnection() error = nil, want error (tester not wired)")
+			t.Error("TestConnection() error = nil, want error (smtp not registered)")
 		}
 	})
 
-	t.Run("tester succeeds", func(t *testing.T) {
-		svc.SetSMTPTester(func(cfg ConnectionConfig, username, secret string) ConnTester {
-			if secret != "s3cret" {
-				t.Errorf("factory got secret = %q, want %q", secret, "s3cret")
+	t.Run("succeeds", func(t *testing.T) {
+		registerSMTP(svc, func(cfg ConnectionConfig, fromAddress, username, secret string) mailer.Sender {
+			if fromAddress != "" {
+				t.Errorf("TestConnection built a sender with fromAddress = %q, want \"\" (only Send needs the from address)", fromAddress)
 			}
-			return mockTester{}
+			if secret != "s3cret" {
+				t.Errorf("constructor got secret = %q, want %q", secret, "s3cret")
+			}
+			return mockSender{}
 		})
 		if err := svc.TestConnection(ctx, created.ID, "smtp"); err != nil {
 			t.Errorf("TestConnection() error = %v, want nil", err)
 		}
 	})
 
-	t.Run("tester fails", func(t *testing.T) {
+	// The Fetcher branch is what every IMAP/POP3 test-connection — and
+	// every call with protocol omitted (default imap) — goes through.
+	t.Run("fetcher branch, and default protocol", func(t *testing.T) {
+		var gotUser, gotSecret string
+		registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+			gotUser, gotSecret = username, secret
+			return mockFetcher{}
+		})
+		if err := svc.TestConnection(ctx, created.ID, ""); err != nil {
+			t.Errorf("TestConnection(\"\") error = %v, want nil (should default to imap)", err)
+		}
+		if err := svc.TestConnection(ctx, created.ID, "imap"); err != nil {
+			t.Errorf("TestConnection(\"imap\") error = %v, want nil", err)
+		}
+		if gotUser != "test@example.com" || gotSecret != "s3cret" {
+			t.Errorf("fetcher constructor got (%q, %q), want (test@example.com, s3cret)", gotUser, gotSecret)
+		}
+	})
+
+	t.Run("fails", func(t *testing.T) {
 		wantErr := errors.New("dial failed")
-		svc.SetSMTPTester(func(cfg ConnectionConfig, username, secret string) ConnTester {
-			return mockTester{err: wantErr}
+		registerSMTP(svc, func(cfg ConnectionConfig, fromAddress, username, secret string) mailer.Sender {
+			return mockSender{err: wantErr}
 		})
 		if err := svc.TestConnection(ctx, created.ID, "smtp"); !errors.Is(err, wantErr) {
 			t.Errorf("TestConnection() error = %v, want %v", err, wantErr)

@@ -59,6 +59,15 @@ type Sender interface {
 
 // Fetcher lists/reads mail from a mailbox (implemented by
 // mailer/imap and mailer/pop3).
+//
+// Fetch MUST return messages newest-first, and each Message's Folder
+// must match the folder it was fetched from — except for a folder-less
+// protocol (POP3), which always reports INBOX and is handed INBOX by
+// account.Service (see canonicalFolder). The order matters beyond
+// display: account.MessageCache.Upsert records it in sort_rank, so an
+// oldest-first implementation would silently reverse cached order. Both
+// implementations have an integration test asserting this (see
+// internal/mailer/imap and internal/mailer/pop3's TestIntegration_Fetch*).
 type Fetcher interface {
 	Fetch(ctx context.Context, folder string, limit, offset int) ([]Message, error)
 	TestConnection(ctx context.Context) error

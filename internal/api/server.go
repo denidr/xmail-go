@@ -35,8 +35,9 @@ func NewServer(apiKey string, service *account.Service, mcpHandler http.Handler)
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		// Same {data,error} envelope as every other route (PRD.MD §7);
+		// only the auth exemption is special (see Handler).
+		writeData(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
 	s.mux.HandleFunc("POST /accounts", s.handleAccountsCreate)

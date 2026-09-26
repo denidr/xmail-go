@@ -18,6 +18,15 @@ import (
 
 const serverName = "xmail"
 
+// Tool names, shared by registerTools and each handler's error prefix so
+// the two lists can't drift apart.
+const (
+	toolListAccounts   = "list_accounts"
+	toolSendEmail      = "send_email"
+	toolFetchEmails    = "fetch_emails"
+	toolCheckNewEmails = "check_new_emails"
+)
+
 // Server wraps the MCP server instance and its tool handlers.
 type Server struct {
 	mcp     *server.MCPServer
@@ -63,14 +72,14 @@ func (s *Server) ServeStdio() error {
 
 func (s *Server) registerTools() {
 	s.mcp.AddTool(
-		mcp.NewTool("list_accounts",
+		mcp.NewTool(toolListAccounts,
 			mcp.WithDescription("List configured email accounts (id, name, email only — never credentials)."),
 		),
 		s.handleListAccounts,
 	)
 
 	s.mcp.AddTool(
-		mcp.NewTool("send_email",
+		mcp.NewTool(toolSendEmail,
 			mcp.WithDescription("Send an email from one of the configured accounts via SMTP."),
 			mcp.WithString("account_id", mcp.Required(), mcp.Description("ID of the account to send from (see list_accounts).")),
 			mcp.WithArray("to", mcp.Required(), mcp.Description("Recipient email addresses."), mcp.Items(map[string]any{"type": "string"})),
@@ -85,7 +94,7 @@ func (s *Server) registerTools() {
 	)
 
 	s.mcp.AddTool(
-		mcp.NewTool("fetch_emails",
+		mcp.NewTool(toolFetchEmails,
 			mcp.WithDescription("Fetch recent emails from an account's mailbox (IMAP or POP3)."),
 			mcp.WithString("account_id", mcp.Required(), mcp.Description("ID of the account to fetch from (see list_accounts).")),
 			mcp.WithString("protocol", mcp.Description("\"imap\" or \"pop3\". Defaults to \"imap\".")),
@@ -97,7 +106,7 @@ func (s *Server) registerTools() {
 	)
 
 	s.mcp.AddTool(
-		mcp.NewTool("check_new_emails",
+		mcp.NewTool(toolCheckNewEmails,
 			mcp.WithDescription("Check unread/new email counts for an account without downloading messages."),
 			mcp.WithString("account_id", mcp.Required(), mcp.Description("ID of the account to check (see list_accounts).")),
 			mcp.WithString("protocol", mcp.Description("\"imap\" or \"pop3\". Defaults to \"imap\".")),
@@ -119,7 +128,7 @@ type accountSummary struct {
 func (s *Server) handleListAccounts(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	accounts, err := s.service.List(ctx)
 	if err != nil {
-		return mcp.NewToolResultErrorFromErr("list_accounts failed", err), nil
+		return mcp.NewToolResultErrorFromErr(toolListAccounts+" failed", err), nil
 	}
 	out := make([]accountSummary, 0, len(accounts))
 	for _, a := range accounts {
@@ -161,7 +170,7 @@ func (s *Server) handleSendEmail(ctx context.Context, req mcp.CallToolRequest, a
 		Headers:  args.Headers,
 	}
 	if err := s.service.Send(ctx, args.AccountID, msg); err != nil {
-		return mcp.NewToolResultErrorFromErr("send_email failed", err), nil
+		return mcp.NewToolResultErrorFromErr(toolSendEmail+" failed", err), nil
 	}
 	return mcp.NewToolResultStructuredOnly(map[string]string{"status": "sent"}), nil
 }
@@ -180,16 +189,13 @@ func (s *Server) handleFetchEmails(ctx context.Context, req mcp.CallToolRequest,
 	if args.AccountID == "" {
 		return mcp.NewToolResultError("account_id is required"), nil
 	}
-	limit := args.Limit
-	if limit <= 0 {
-		limit = account.DefaultFetchLimit
-	}
-
-	// protocol/folder passed through as-is (account.Service defaults
-	// empty strings centrally — see CODE_REVIEW.md "Duplicated Code").
-	msgs, err := s.service.FetchMessages(ctx, args.AccountID, args.Protocol, args.Folder, limit, 0, args.Refresh)
+	// protocol/folder/limit passed through as-is: account.Service
+	// defaults empty protocol/folder and limit <= 0 centrally, so REST
+	// and MCP can't drift on what "unspecified" means (see
+	// CODE_REVIEW.md "Duplicated Code").
+	msgs, err := s.service.FetchMessages(ctx, args.AccountID, args.Protocol, args.Folder, args.Limit, 0, args.Refresh)
 	if err != nil {
-		return mcp.NewToolResultErrorFromErr("fetch_emails failed", err), nil
+		return mcp.NewToolResultErrorFromErr(toolFetchEmails+" failed", err), nil
 	}
 	return mcp.NewToolResultStructuredOnly(msgs), nil
 }
@@ -207,10 +213,9 @@ func (s *Server) handleCheckNewEmails(ctx context.Context, req mcp.CallToolReque
 
 	unread, newCount, err := s.service.CheckNew(ctx, args.AccountID, args.Protocol, args.Folder)
 	if err != nil {
-		return mcp.NewToolResultErrorFromErr("check_new_emails failed", err), nil
+		return mcp.NewToolResultErrorFromErr(toolCheckNewEmails+" failed", err), nil
 	}
-	return mcp.NewToolResultStructuredOnly(map[string]int{
-		"unread_count": unread,
-		"new_count":    newCount,
-	}), nil
+	// The same account.CheckResult REST serializes (see internal/api) —
+	// one shared shape for both skins.
+	return mcp.NewToolResultStructuredOnly(account.CheckResult{Unread: unread, New: newCount}), nil
 }

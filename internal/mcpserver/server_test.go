@@ -3,9 +3,11 @@ package mcpserver
 import (
 	"bytes"
 	"context"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
+	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"xmail/internal/account"
@@ -33,6 +35,14 @@ func sampleAccount() account.Account {
 		SMTP:     &account.ConnectionConfig{Host: "smtp.example.com", Port: 587, TLSMode: account.TLSModeStartTLS},
 		IMAP:     &account.ConnectionConfig{Host: "imap.example.com", Port: 993, TLSMode: account.TLSModeTLS},
 	}
+}
+
+func registerSender(svc *account.Service, fn func(cfg account.ConnectionConfig, fromAddress, username, secret string) mailer.Sender) {
+	svc.RegisterProtocol(account.ProtocolSMTP, account.Protocol{Sender: fn})
+}
+
+func registerIMAPFetcher(svc *account.Service, fn func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher) {
+	svc.RegisterProtocol(account.ProtocolIMAP, account.Protocol{Fetcher: fn})
 }
 
 // mockSender/mockFetcherChecker are test doubles standing in for real
@@ -99,7 +109,7 @@ func TestHandleSendEmail(t *testing.T) {
 	}
 
 	var sent mailer.OutgoingMessage
-	svc.SetSMTPSender(func(cfg account.ConnectionConfig, fromAddress, username, secret string) mailer.Sender {
+	registerSender(svc, func(cfg account.ConnectionConfig, fromAddress, username, secret string) mailer.Sender {
 		return &mockSender{sent: &sent}
 	})
 
@@ -156,7 +166,7 @@ func TestHandleFetchEmails(t *testing.T) {
 	}
 
 	fixture := []mailer.Message{{UID: "1", Folder: "INBOX", Subject: "Hello"}}
-	svc.SetIMAPFactory(func(cfg account.ConnectionConfig, username, secret string) mailer.FetcherChecker {
+	registerIMAPFetcher(svc, func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {
 		return mockFetcherChecker{fetchResult: fixture}
 	})
 
@@ -181,7 +191,7 @@ func TestHandleCheckNewEmails(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	svc.SetIMAPFactory(func(cfg account.ConnectionConfig, username, secret string) mailer.FetcherChecker {
+	registerIMAPFetcher(svc, func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {
 		return mockFetcherChecker{unread: 5, fetchResult: []mailer.Message{{UID: "1", Folder: "INBOX"}}}
 	})
 
@@ -192,15 +202,16 @@ func TestHandleCheckNewEmails(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("handleCheckNewEmails() IsError = true, content = %+v", result.Content)
 	}
-	counts, ok := result.StructuredContent.(map[string]int)
+	// One shared shape with REST (account.CheckResult).
+	counts, ok := result.StructuredContent.(account.CheckResult)
 	if !ok {
-		t.Fatalf("StructuredContent type = %T, want map[string]int", result.StructuredContent)
+		t.Fatalf("StructuredContent type = %T, want account.CheckResult", result.StructuredContent)
 	}
-	if counts["unread_count"] != 5 {
-		t.Errorf("unread_count = %d, want 5", counts["unread_count"])
+	if counts.Unread != 5 {
+		t.Errorf("Unread = %d, want 5", counts.Unread)
 	}
-	if counts["new_count"] != 1 {
-		t.Errorf("new_count = %d, want 1 (first check, nothing cached yet)", counts["new_count"])
+	if counts.New != 1 {
+		t.Errorf("New = %d, want 1 (first check, nothing cached yet)", counts.New)
 	}
 }
 
@@ -228,5 +239,121 @@ func TestHandleFetchEmails_MissingAccountID(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Error("IsError = false, want true for missing account_id")
+	}
+}
+
+// dialMCP starts an in-process MCP client over the real Streamable HTTP
+// transport against s's handler and completes the initialize handshake.
+func dialMCP(t *testing.T, s *Server) *mcpclient.Client {
+	t.Helper()
+	httpSrv := httptest.NewServer(s.HTTPHandler())
+	t.Cleanup(httpSrv.Close)
+
+	c, err := mcpclient.NewStreamableHttpClient(httpSrv.URL)
+	if err != nil {
+		t.Fatalf("NewStreamableHttpClient() error = %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := c.Initialize(context.Background(), mcp.InitializeRequest{Params: mcp.InitializeParams{
+		ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+		ClientInfo:      mcp.Implementation{Name: "xmail-test", Version: "0.0.0"},
+	}}); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	return c
+}
+
+// TestTransport_SendEmailBindsArguments drives a tool call through the
+// real Streamable HTTP transport instead of calling the handler
+// directly. Direct handler tests skip mcp.NewTypedToolHandler's
+// BindArguments path — the exact code that once dropped a tool argument
+// without any test noticing (see ARCHITECTURE.md §7), so this asserts
+// arguments survive the JSON-RPC round trip.
+func TestTransport_SendEmailBindsArguments(t *testing.T) {
+	ctx := context.Background()
+	s, svc := newTestServer(t)
+
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var sent mailer.OutgoingMessage
+	registerSender(svc, func(cfg account.ConnectionConfig, fromAddress, username, secret string) mailer.Sender {
+		return &mockSender{sent: &sent}
+	})
+
+	c := dialMCP(t, s)
+	res, err := c.CallTool(ctx, mcp.CallToolRequest{Params: mcp.CallToolParams{
+		Name: toolSendEmail,
+		Arguments: map[string]any{
+			"account_id": created.ID,
+			"to":         []string{"rcpt@example.com"},
+			"subject":    "Hello over the wire",
+			"body_text":  "hi",
+		},
+	}})
+	if err != nil {
+		t.Fatalf("CallTool() error = %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("CallTool() IsError = true, content = %+v", res.Content)
+	}
+
+	if sent.Subject != "Hello over the wire" {
+		t.Errorf("bound Subject = %q, want %q", sent.Subject, "Hello over the wire")
+	}
+	if len(sent.To) != 1 || sent.To[0] != "rcpt@example.com" {
+		t.Errorf("bound To = %v, want [rcpt@example.com]", sent.To)
+	}
+	if sent.BodyText != "hi" {
+		t.Errorf("bound BodyText = %q, want %q", sent.BodyText, "hi")
+	}
+}
+
+// TestTransport_CheckNewEmailsWireKeys decodes check_new_emails' response
+// off the wire and asserts the JSON keys are unread_count/new_count —
+// the same keys REST's /check emits from the shared account.CheckResult
+// (PLAN.md §10.9 candidate D). Asserting the decoded struct's fields
+// would not catch a bad `json` tag; this does.
+func TestTransport_CheckNewEmailsWireKeys(t *testing.T) {
+	ctx := context.Background()
+	s, svc := newTestServer(t)
+
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	registerIMAPFetcher(svc, func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{unread: 4, fetchResult: []mailer.Message{{UID: "u1", Folder: "INBOX"}}}
+	})
+
+	c := dialMCP(t, s)
+	res, err := c.CallTool(ctx, mcp.CallToolRequest{Params: mcp.CallToolParams{
+		Name:      toolCheckNewEmails,
+		Arguments: map[string]any{"account_id": created.ID},
+	}})
+	if err != nil {
+		t.Fatalf("CallTool() error = %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("CallTool() IsError = true, content = %+v", res.Content)
+	}
+
+	// StructuredContent came back over the wire, so it is a decoded map
+	// keyed by the actual JSON field names.
+	sc, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("StructuredContent type = %T, want map[string]any", res.StructuredContent)
+	}
+	if sc["unread_count"] != float64(4) {
+		t.Errorf("wire unread_count = %v, want 4", sc["unread_count"])
+	}
+	if sc["new_count"] != float64(1) {
+		t.Errorf("wire new_count = %v, want 1 (first check, nothing cached yet)", sc["new_count"])
 	}
 }

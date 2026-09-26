@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -19,12 +20,16 @@ type Config struct {
 	MCPStdioEnable bool   // XMAIL_MCP_STDIO, expose MCP server over stdio
 }
 
+// Exported so a caller that has to reconstruct xmail's environment from
+// a loaded Config (internal/winservice, which the Windows SCM launches
+// into an empty environment) can name the variables without re-listing
+// them — see Config.Environ.
 const (
-	envListenAddr    = "XMAIL_LISTEN_ADDR"
-	envDBPath        = "XMAIL_DB_PATH"
-	envEncryptionKey = "XMAIL_ENCRYPTION_KEY"
-	envAPIKey        = "XMAIL_API_KEY"
-	envMCPStdio      = "XMAIL_MCP_STDIO"
+	EnvListenAddr    = "XMAIL_LISTEN_ADDR"
+	EnvDBPath        = "XMAIL_DB_PATH"
+	EnvEncryptionKey = "XMAIL_ENCRYPTION_KEY"
+	EnvAPIKey        = "XMAIL_API_KEY"
+	EnvMCPStdio      = "XMAIL_MCP_STDIO"
 
 	defaultListenAddr = ":8080"
 	defaultDBPath     = "xmail.db"
@@ -49,33 +54,48 @@ func Load() (Config, error) {
 	_ = godotenv.Load()
 
 	cfg := Config{
-		ListenAddr: getEnvOr(envListenAddr, defaultListenAddr),
-		DBPath:     getEnvOr(envDBPath, defaultDBPath),
-		APIKey:     os.Getenv(envAPIKey),
+		ListenAddr: getEnvOr(EnvListenAddr, defaultListenAddr),
+		DBPath:     getEnvOr(EnvDBPath, defaultDBPath),
+		APIKey:     os.Getenv(EnvAPIKey),
 	}
 
 	if cfg.APIKey == "" {
-		return Config{}, fmt.Errorf("%s is required (static API key for X-API-Key auth)", envAPIKey)
+		return Config{}, fmt.Errorf("%s is required (static API key for X-API-Key auth)", EnvAPIKey)
 	}
 
-	rawKey := os.Getenv(envEncryptionKey)
+	rawKey := os.Getenv(EnvEncryptionKey)
 	if rawKey == "" {
-		return Config{}, fmt.Errorf("%s is required (base64-encoded 32-byte AES-256 key, generate with: openssl rand -base64 32)", envEncryptionKey)
+		return Config{}, fmt.Errorf("%s is required (base64-encoded 32-byte AES-256 key, generate with: openssl rand -base64 32)", EnvEncryptionKey)
 	}
 	key, err := base64.StdEncoding.DecodeString(rawKey)
 	if err != nil {
-		return Config{}, fmt.Errorf("%s must be valid base64: %w", envEncryptionKey, err)
+		return Config{}, fmt.Errorf("%s must be valid base64: %w", EnvEncryptionKey, err)
 	}
 	if len(key) != encryptionKeyLen {
-		return Config{}, fmt.Errorf("%s must decode to exactly %d bytes, got %d", envEncryptionKey, encryptionKeyLen, len(key))
+		return Config{}, fmt.Errorf("%s must decode to exactly %d bytes, got %d", EnvEncryptionKey, encryptionKeyLen, len(key))
 	}
 	cfg.EncryptionKey = key
 
-	if v := os.Getenv(envMCPStdio); v == "true" || v == "1" {
+	if v := os.Getenv(EnvMCPStdio); v == "true" || v == "1" {
 		cfg.MCPStdioEnable = true
 	}
 
 	return cfg, nil
+}
+
+// Environ returns cfg in the environment-variable form Load reads — the
+// inverse of Load, so the set of XMAIL_* names and their encoding live
+// only in this package (internal/winservice used to re-list them all as
+// literals and re-encode EncryptionKey itself; that coupling shipped
+// two bugs — see PLAN.md §10.6 #19 and §10.7 #A).
+func (c Config) Environ() map[string]string {
+	return map[string]string{
+		EnvAPIKey:        c.APIKey,
+		EnvEncryptionKey: base64.StdEncoding.EncodeToString(c.EncryptionKey),
+		EnvListenAddr:    c.ListenAddr,
+		EnvDBPath:        c.DBPath,
+		EnvMCPStdio:      strconv.FormatBool(c.MCPStdioEnable),
+	}
 }
 
 func getEnvOr(key, fallback string) string {

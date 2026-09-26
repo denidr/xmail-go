@@ -13,8 +13,8 @@ package winservice
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/kardianos/service"
@@ -73,37 +73,60 @@ func (p *program) Stop(s service.Service) error {
 // Install/Uninstall/Start/Stop/Run against the Windows Service Control
 // Manager.
 //
-// EnvVars is set from cfg (re-encoding EncryptionKey back to the same
-// base64 form config.Load expects) because the Windows Service Control
-// Manager launches the service in a *fresh* process with an empty
-// environment — it does not inherit whatever environment the
-// interactive tray process had when the user clicked "Install as
-// Windows Service". Without this, the SCM-launched process's own
-// config.Load() call (see cmd/xmail-tray/main.go) fails immediately
-// for a missing XMAIL_API_KEY/XMAIL_ENCRYPTION_KEY and the installed
-// service can never actually start — kardianos does support EnvVars on
-// Windows (writes them into the service's registry entry), we just
-// weren't setting it. Caught by code review; see PLAN.md §10.6.
+// EnvVars is set from cfg via Config.Environ (see internal/config)
+// because the Windows Service Control Manager launches the service in a
+// *fresh* process with an empty environment — it does not inherit
+// whatever environment the interactive tray process had when the user
+// clicked "Install as Windows Service". Without this, the SCM-launched
+// process's own config.Load() call (see cmd/xmail-tray/main.go) fails
+// immediately for a missing XMAIL_API_KEY/XMAIL_ENCRYPTION_KEY and the
+// installed service can never actually start — kardianos does support
+// EnvVars on Windows (writes them into the service's registry entry),
+// we just weren't setting it. Caught by code review; see PLAN.md §10.6.
 func New(cfg config.Config, version string) (service.Service, error) {
-	return service.New(&program{cfg: cfg, version: version}, buildServiceConfig(cfg))
+	svcConfig, err := buildServiceConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return service.New(&program{cfg: cfg, version: version}, svcConfig)
 }
 
 // buildServiceConfig is split out from New so the EnvVars it produces
 // can be unit-tested (round-tripped back through config.Load) without
 // needing an actual Windows Service install/SCM, which requires
 // Administrator privileges — see service_test.go.
-func buildServiceConfig(cfg config.Config) *service.Config {
+//
+// The set of variables and their encoding is Config.Environ's job, not
+// this package's (previously winservice re-listed every XMAIL_* name as
+// a literal and re-encoded EncryptionKey itself — the duplication that
+// shipped the bug above). The one addition here is platform-specific:
+// DBPath is resolved to an absolute path before being written to
+// EnvVars. The Windows Service Control Manager launches services with
+// cwd %SystemRoot%\System32 (kardianos/service's WorkingDirectory
+// field is explicitly "not supported on Windows", so it can't fix
+// this), so a relative XMAIL_DB_PATH (the documented default,
+// .env.example: "xmail.db") would have the installed service try to
+// open/create its database under System32 instead of wherever the
+// interactive session actually meant — access-denied at best, a
+// database silently diverged from the tray's at worst. Resolving it
+// here, relative to the cwd of the interactive process installing the
+// service (a sane, predictable location), fixes that. Caught by
+// code review; see PLAN.md §10.7.
+func buildServiceConfig(cfg config.Config) (*service.Config, error) {
+	env := cfg.Environ()
+
+	absDBPath, err := filepath.Abs(cfg.DBPath)
+	if err != nil {
+		return nil, fmt.Errorf("winservice: resolve absolute XMAIL_DB_PATH: %w", err)
+	}
+	env[config.EnvDBPath] = absDBPath
+
 	return &service.Config{
 		Name:        Name,
 		DisplayName: DisplayName,
 		Description: Description,
-		EnvVars: map[string]string{
-			"XMAIL_API_KEY":        cfg.APIKey,
-			"XMAIL_ENCRYPTION_KEY": base64.StdEncoding.EncodeToString(cfg.EncryptionKey),
-			"XMAIL_LISTEN_ADDR":    cfg.ListenAddr,
-			"XMAIL_DB_PATH":        cfg.DBPath,
-		},
-	}
+		EnvVars:     env,
+	}, nil
 }
 
 // Interactive reports whether the current process is running

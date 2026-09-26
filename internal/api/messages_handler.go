@@ -27,17 +27,16 @@ func queryBool(r *http.Request, key string) bool {
 // handleMessagesList implements GET /accounts/{id}/messages (see
 // PLAN.md §3): ?folder=INBOX&limit=20&offset=0&protocol=imap&refresh=true
 //
-// folder/protocol are passed through as-is (including empty string)
-// and defaulted once, centrally, in account.Service — see
+// folder/protocol/limit are all passed through as-is (including empty
+// string / 0) and defaulted once, centrally, in account.Service — see
 // CODE_REVIEW.md "Duplicated Code" (defaults used to be reimplemented
-// per-handler). limit still defaults here because that's an HTTP
-// concern (an absent query param vs. an explicit "0"), not a business
-// rule.
+// per-handler, and REST's explicit limit=0 used to disagree with
+// MCP's).
 func (s *Server) handleMessagesList(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	folder := r.URL.Query().Get("folder")
 	protocol := r.URL.Query().Get("protocol")
-	limit := queryIntOr(r, "limit", account.DefaultFetchLimit)
+	limit := queryIntOr(r, "limit", 0)
 	offset := queryIntOr(r, "offset", 0)
 	refresh := queryBool(r, "refresh")
 
@@ -68,7 +67,9 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		writeErrFor(w, err)
 		return
 	}
-	writeData(w, http.StatusOK, map[string]any{"unread_count": unread, "new_count": newCount})
+	// The same account.CheckResult MCP's check_new_emails serializes —
+	// one shared shape for both skins.
+	writeData(w, http.StatusOK, account.CheckResult{Unread: unread, New: newCount})
 }
 
 type markReadRequest struct {

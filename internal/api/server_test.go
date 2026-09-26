@@ -49,7 +49,23 @@ func TestHealthz_NoAuthRequired(t *testing.T) {
 	s := newTestServer(t)
 	rec := doRequest(t, s.Handler(), http.MethodGet, "/healthz", "", nil)
 	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", rec.Code)
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	// Regression (CODE_REVIEW.md round 5): /healthz used to write a bare
+	// "ok", breaking the {data,error} envelope every other route uses
+	// (PRD.MD §7).
+	var env struct {
+		Data  map[string]string `json:"data"`
+		Error any               `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode healthz response: %v", err)
+	}
+	if env.Data["status"] != "ok" {
+		t.Errorf("healthz data.status = %q, want \"ok\"", env.Data["status"])
+	}
+	if env.Error != nil {
+		t.Errorf("healthz error = %v, want null", env.Error)
 	}
 }
 
@@ -199,6 +215,50 @@ func TestMessagesAndCheck_NotWiredYetReturnsError(t *testing.T) {
 	}
 }
 
+// TestCheck_ResponseShape locks the REST /check success body to the
+// shared account.CheckResult shape MCP's check_new_emails serializes
+// (PRD.MD §6.4; PLAN.md §10.9 candidate D) — both the decoded fields and
+// the raw JSON keys must stay unread_count/new_count, so the two skins
+// can't drift.
+func TestCheck_ResponseShape(t *testing.T) {
+	s := newTestServer(t)
+	h := s.Handler()
+	id := createTestAccount(t, h)
+
+	registerIMAP(s, func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {
+		return &mockIMAPClient{unread: 7, fetchResult: []mailer.Message{{UID: "u1", Folder: "INBOX"}}}
+	})
+
+	rec := doRequest(t, h, http.MethodPost, "/accounts/"+id+"/check", testAPIKey, checkRequest{Protocol: "imap", Folder: "INBOX"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var env struct {
+		Data account.CheckResult `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode check response: %v", err)
+	}
+	if env.Data.Unread != 7 {
+		t.Errorf("unread_count = %d, want 7", env.Data.Unread)
+	}
+	if env.Data.New != 1 {
+		t.Errorf("new_count = %d, want 1 (first check, nothing cached yet)", env.Data.New)
+	}
+
+	// Guard the wire keys themselves, not just the struct decode.
+	var raw struct {
+		Data map[string]int `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw check response: %v", err)
+	}
+	if raw.Data["unread_count"] != 7 || raw.Data["new_count"] != 1 {
+		t.Errorf("raw data = %v, want unread_count=7, new_count=1", raw.Data)
+	}
+}
+
 func TestSend_ValidatesRecipients(t *testing.T) {
 	s := newTestServer(t)
 	h := s.Handler()
@@ -221,6 +281,7 @@ func TestSend_ValidatesRecipients(t *testing.T) {
 type mockIMAPClient struct {
 	fetchResult   []mailer.Message
 	fetchCalls    int
+	unread        int
 	markReadCalls []string
 }
 
@@ -228,8 +289,10 @@ func (m *mockIMAPClient) Fetch(ctx context.Context, folder string, limit, offset
 	m.fetchCalls++
 	return m.fetchResult, nil
 }
-func (m *mockIMAPClient) TestConnection(ctx context.Context) error              { return nil }
-func (m *mockIMAPClient) Check(ctx context.Context, folder string) (int, error) { return 0, nil }
+func (m *mockIMAPClient) TestConnection(ctx context.Context) error { return nil }
+func (m *mockIMAPClient) Check(ctx context.Context, folder string) (int, error) {
+	return m.unread, nil
+}
 func (m *mockIMAPClient) MarkRead(ctx context.Context, folder, uid string) error {
 	m.markReadCalls = append(m.markReadCalls, uid)
 	return nil
@@ -250,6 +313,16 @@ func createTestAccount(t *testing.T, h http.Handler) string {
 	return env.Data.ID
 }
 
+// registerIMAP/registerSMTP wire test doubles as the IMAP/SMTP protocol
+// implementations for this test server (see account.Protocol).
+func registerIMAP(s *Server, fn func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher) {
+	s.service.RegisterProtocol(account.ProtocolIMAP, account.Protocol{Fetcher: fn})
+}
+
+func registerSMTP(s *Server, fn func(cfg account.ConnectionConfig, fromAddress, username, secret string) mailer.Sender) {
+	s.service.RegisterProtocol(account.ProtocolSMTP, account.Protocol{Sender: fn})
+}
+
 // TestMessagesList_Refresh proves the ?refresh=true query param
 // reaches account.Service.FetchMessages and forces a live dial even
 // when the cache already has results — REST-level counterpart to
@@ -261,7 +334,7 @@ func TestMessagesList_Refresh(t *testing.T) {
 	id := createTestAccount(t, h)
 
 	mock := &mockIMAPClient{fetchResult: []mailer.Message{{UID: "1", Folder: "INBOX", Subject: "Hi"}}}
-	s.service.SetIMAPFactory(func(cfg account.ConnectionConfig, username, secret string) mailer.FetcherChecker {
+	registerIMAP(s, func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {
 		return mock
 	})
 
@@ -300,7 +373,7 @@ func TestMarkRead_Success(t *testing.T) {
 	id := createTestAccount(t, h)
 
 	mock := &mockIMAPClient{}
-	s.service.SetIMAPFactory(func(cfg account.ConnectionConfig, username, secret string) mailer.FetcherChecker {
+	registerIMAP(s, func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {
 		return mock
 	})
 
@@ -332,7 +405,7 @@ func TestSend_CustomHeaders(t *testing.T) {
 	id := createTestAccount(t, h)
 
 	var captured mailer.OutgoingMessage
-	s.service.SetSMTPSender(func(cfg account.ConnectionConfig, fromAddress, username, secret string) mailer.Sender {
+	registerSMTP(s, func(cfg account.ConnectionConfig, fromAddress, username, secret string) mailer.Sender {
 		return &captureSender{msg: &captured}
 	})
 

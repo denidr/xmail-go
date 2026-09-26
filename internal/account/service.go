@@ -19,111 +19,76 @@ var ErrValidation = errors.New("account: validation failed")
 // drift on what "unspecified" means (see CODE_REVIEW.md "Duplicated
 // Code": defaults were previously reimplemented in 3 places).
 const (
-	DefaultProtocol   = "imap"
+	DefaultProtocol   = ProtocolIMAP
 	DefaultFetchLimit = 20
 )
 
 // connConfigForProtocol returns the account's ConnectionConfig for
 // protocol ("smtp", "imap", or "pop3"), or ErrValidation if protocol
 // is not one of those three. This is the one place that maps a
-// protocol string to a field on Account — shared by TestConnection
-// and resolveFetcher (see CODE_REVIEW.md "Primitive Obsession /
-// Repeated Switches"). Selecting the matching *Factory for the
-// protocol is deliberately left to each caller: TestConnection needs
-// a TesterFactory, resolveFetcher needs a Fetcher-returning factory,
-// and unifying those two into one generic lookup would trade a small
-// amount of duplication for a less type-safe abstraction — not a
-// clear win, so it was left as-is (see ARCHITECTURE.md §5).
+// protocol string to a field on Account — the matching implementation
+// constructors come from the registered Protocol table
+// (Service.protocols), so neither this mapping nor the constructor
+// lookup is re-implemented per operation.
 func connConfigForProtocol(a Account, protocol string) (*ConnectionConfig, error) {
 	switch protocol {
-	case "smtp":
+	case ProtocolSMTP:
 		return a.SMTP, nil
-	case "imap":
+	case ProtocolIMAP:
 		return a.IMAP, nil
-	case "pop3":
+	case ProtocolPOP3:
 		return a.POP3, nil
 	default:
 		return nil, fmt.Errorf("%w: unknown protocol %q", ErrValidation, protocol)
 	}
 }
 
-// ConnTester is implemented by each protocol's mailer client
-// (smtp.Client, imap.Client, pop3.Client) to support the
-// test-connection endpoint. See PLAN.md §1 design principle: Service
-// only depends on this interface, never on a concrete mailer package.
-type ConnTester interface {
-	TestConnection(ctx context.Context) error
+// canonicalFolder resolves the folder to use for protocol: empty means
+// the protocol's default folder, and POP3 — which has no folder
+// concept — is always its only folder, INBOX, whatever the caller
+// passed. Resolving it once here keeps the Message cache key
+// (CacheKey.Folder) and the folder recorded per message in agreement
+// for a folder-less protocol.
+func canonicalFolder(protocol, folder string) string {
+	if protocol == ProtocolPOP3 {
+		folder = ""
+	}
+	return mailer.DefaultFolder(folder)
 }
-
-// TesterFactory builds a ConnTester for one account's connection
-// config and credentials. Wired in by internal/app once
-// internal/mailer/{smtp,imap,pop3} exist (Fase 2-4); nil until then.
-type TesterFactory func(cfg ConnectionConfig, username, secret string) ConnTester
-
-// SMTPSenderFactory builds a mailer.Sender for one account's SMTP
-// config, from address, and credentials. Wired in by internal/app once
-// internal/mailer/smtp exists (Fase 2); nil until then.
-type SMTPSenderFactory func(cfg ConnectionConfig, fromAddress, username, secret string) mailer.Sender
-
-// IMAPFactory builds a mailer.FetcherChecker (fetch + unread count)
-// for one account's IMAP config and credentials. Wired in by
-// internal/app once internal/mailer/imap exists (Fase 3); nil until
-// then.
-type IMAPFactory func(cfg ConnectionConfig, username, secret string) mailer.FetcherChecker
-
-// POP3Factory builds a mailer.Fetcher (fetch only — POP3 has no
-// unseen-flag concept) for one account's POP3 config and credentials.
-// Wired in by internal/app once internal/mailer/pop3 exists (Fase 4);
-// nil until then.
-type POP3Factory func(cfg ConnectionConfig, username, secret string) mailer.Fetcher
 
 // Service holds account business logic: input validation and
-// dispatching test-connection/send/fetch/check calls to the relevant
-// mailer implementation.
+// dispatching test-connection/send/fetch/check calls to the registered
+// Protocol implementations. Message-cache reads/writes go through
+// cache (MessageCache), not repo — Repository owns only accounts and
+// credentials.
 type Service struct {
-	repo *Repository
-
-	smtpTester TesterFactory
-	imapTester TesterFactory
-	pop3Tester TesterFactory
-
-	smtpSender  SMTPSenderFactory
-	imapFactory IMAPFactory
-	pop3Factory POP3Factory
+	repo      *Repository
+	cache     *MessageCache
+	protocols map[string]Protocol
 }
 
-// defaultFetchLimit bounds how many recent messages CheckNew fetches
-// to compute a "new since last check" count (see CheckNew).
+// defaultCheckFetchLimit bounds how many recent messages CheckNew
+// fetches to compute a "new since last check" count (see CheckNew).
 const defaultCheckFetchLimit = 50
 
-// NewService builds a Service backed by repo.
+// NewService builds a Service backed by repo, sharing repo's database
+// for the Message cache.
 func NewService(repo *Repository) *Service {
-	return &Service{repo: repo}
+	return &Service{
+		repo:      repo,
+		cache:     NewMessageCache(repo.db),
+		protocols: make(map[string]Protocol),
+	}
 }
 
-// SetSMTPTester wires the SMTP protocol tester (called from
-// internal/app during Fase 2 setup).
-func (s *Service) SetSMTPTester(f TesterFactory) { s.smtpTester = f }
-
-// SetIMAPTester wires the IMAP protocol tester (called from
-// internal/app during Fase 3 setup).
-func (s *Service) SetIMAPTester(f TesterFactory) { s.imapTester = f }
-
-// SetPOP3Tester wires the POP3 protocol tester (called from
-// internal/app during Fase 4 setup).
-func (s *Service) SetPOP3Tester(f TesterFactory) { s.pop3Tester = f }
-
-// SetSMTPSender wires the SMTP send implementation (called from
-// internal/app during Fase 2 setup).
-func (s *Service) SetSMTPSender(f SMTPSenderFactory) { s.smtpSender = f }
-
-// SetIMAPFactory wires the IMAP fetch/check implementation (called
-// from internal/app during Fase 3 setup).
-func (s *Service) SetIMAPFactory(f IMAPFactory) { s.imapFactory = f }
-
-// SetPOP3Factory wires the POP3 fetch implementation (called from
-// internal/app during Fase 4 setup).
-func (s *Service) SetPOP3Factory(f POP3Factory) { s.pop3Factory = f }
+// RegisterProtocol wires a mailer protocol's constructors, keyed by its
+// Protocol name (called from internal/app once the concrete
+// internal/mailer/{smtp,imap,pop3} packages exist). Until a protocol is
+// registered, operations on it return a clear "not registered" error
+// rather than a silent no-op.
+func (s *Service) RegisterProtocol(name string, p Protocol) {
+	s.protocols[name] = p
+}
 
 // Validate checks the required fields for an account: name, email,
 // username, at least one protocol configured, and a non-empty
@@ -150,7 +115,15 @@ func Validate(a Account, requireSecret bool, secret string) error {
 	if a.SMTP == nil && a.IMAP == nil && a.POP3 == nil {
 		return fmt.Errorf("%w: at least one of smtp, imap, pop3 must be configured", ErrValidation)
 	}
-	for proto, c := range map[string]*ConnectionConfig{"smtp": a.SMTP, "imap": a.IMAP, "pop3": a.POP3} {
+	// Iterated in a fixed smtp/imap/pop3 order (not a map) so the error
+	// returned for an account with more than one invalid protocol is
+	// deterministic — a map literal iterates in random order, which made
+	// "which protocol's error surfaces" vary run to run.
+	for _, pc := range []struct {
+		proto string
+		cfg   *ConnectionConfig
+	}{{ProtocolSMTP, a.SMTP}, {ProtocolIMAP, a.IMAP}, {ProtocolPOP3, a.POP3}} {
+		proto, c := pc.proto, pc.cfg
 		if c == nil {
 			continue
 		}
@@ -169,7 +142,7 @@ func Validate(a Account, requireSecret bool, secret string) error {
 		// go-pop3 library has none) — reject it here at save time
 		// instead of letting the account through and only failing later
 		// on every send/fetch/check/test-connection call.
-		if proto == "pop3" && c.TLSMode == TLSModeStartTLS {
+		if proto == ProtocolPOP3 && c.TLSMode == TLSModeStartTLS {
 			return fmt.Errorf("%w: pop3.tls_mode \"starttls\" is not supported (use \"tls\" or \"none\")", ErrValidation)
 		}
 	}
@@ -214,7 +187,9 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 
 // TestConnection dials+authenticates against the given protocol
 // ("smtp", "imap", or "pop3") for an existing account, without
-// sending/fetching anything.
+// sending/fetching anything. It builds whichever implementation the
+// protocol registers (Sender for SMTP, Fetcher for IMAP/POP3) and calls
+// its TestConnection.
 func (s *Service) TestConnection(ctx context.Context, accountID string, protocol string) error {
 	if protocol == "" {
 		protocol = DefaultProtocol
@@ -230,25 +205,26 @@ func (s *Service) TestConnection(ctx context.Context, accountID string, protocol
 	if cfg == nil {
 		return fmt.Errorf("%w: account has no %s configuration", ErrValidation, protocol)
 	}
-
-	var factory TesterFactory
-	switch protocol {
-	case "smtp":
-		factory = s.smtpTester
-	case "imap":
-		factory = s.imapTester
-	case "pop3":
-		factory = s.pop3Tester
-	}
-	if factory == nil {
-		return fmt.Errorf("account: %s tester not wired up yet (see PLAN.md Fase 2-4)", protocol)
+	p, err := s.protocolFor(protocol)
+	if err != nil {
+		return err
 	}
 
 	secret, err := s.repo.Secret(ctx, accountID)
 	if err != nil {
 		return err
 	}
-	return factory(*cfg, a.Username, secret).TestConnection(ctx)
+
+	var tester testConn
+	switch {
+	case p.Sender != nil:
+		tester = p.Sender(*cfg, "", a.Username, secret)
+	case p.Fetcher != nil:
+		tester = p.Fetcher(*cfg, a.Username, secret)
+	default:
+		return fmt.Errorf("account: protocol %q registers no implementation", protocol)
+	}
+	return tester.TestConnection(ctx)
 }
 
 // Send delivers msg via the account's SMTP configuration.
@@ -260,28 +236,29 @@ func (s *Service) Send(ctx context.Context, accountID string, msg mailer.Outgoin
 	if a.SMTP == nil {
 		return fmt.Errorf("%w: account has no smtp configuration", ErrValidation)
 	}
-	if s.smtpSender == nil {
-		return errors.New("account: smtp sender not wired up yet (see PLAN.md Fase 2)")
+	p, err := s.protocolFor(ProtocolSMTP)
+	if err != nil {
+		return err
+	}
+	if p.Sender == nil {
+		return fmt.Errorf("account: protocol %q registers no sender", ProtocolSMTP)
 	}
 	secret, err := s.repo.Secret(ctx, accountID)
 	if err != nil {
 		return err
 	}
-	return s.smtpSender(*a.SMTP, a.Email, a.Username, secret).Send(ctx, msg)
+	return p.Sender(*a.SMTP, a.Email, a.Username, secret).Send(ctx, msg)
 }
 
 // resolveFetcher returns the mailer.Fetcher for protocol ("imap" or
-// "pop3", defaulting to DefaultProtocol) on the given account, plus
-// its decrypted secret.
-// resolveFetcher also returns the resolved protocol (never "") so
-// callers that need it for a cache key (FetchMessages, CheckNew,
-// MarkRead) use exactly this value instead of re-implementing the
-// same "" -> DefaultProtocol default themselves — a prior version had
-// each caller re-guard protocol=="" independently, which (a) was the
-// exact "Duplicated Code" CODE_REVIEW.md flagged and (b) had already
-// caused one real bug where a caller's un-defaulted copy of protocol
-// disagreed with the fetcher this function actually built (see
-// PLAN.md §10 for that incident).
+// "pop3", defaulting to DefaultProtocol) on the given account, plus the
+// resolved protocol (never "") so callers that need it for a cache key
+// (FetchMessages, CheckNew, MarkRead) use exactly this value instead of
+// re-implementing the same "" -> DefaultProtocol default themselves — a
+// prior version had each caller re-guard protocol=="" independently,
+// which both duplicated logic and had already caused one real bug where
+// a caller's un-defaulted copy of protocol disagreed with the fetcher
+// this function actually built (see PLAN.md §10 for that incident).
 func (s *Service) resolveFetcher(ctx context.Context, accountID, protocol string) (fetcher mailer.Fetcher, resolvedProtocol string, err error) {
 	if protocol == "" {
 		protocol = DefaultProtocol
@@ -294,60 +271,62 @@ func (s *Service) resolveFetcher(ctx context.Context, accountID, protocol string
 	if err != nil {
 		return nil, "", err
 	}
-	if protocol == "smtp" {
+	if protocol == ProtocolSMTP {
 		return nil, "", fmt.Errorf("%w: protocol %q is not valid for fetch/check (must be imap or pop3)", ErrValidation, protocol)
 	}
 	if cfg == nil {
 		return nil, "", fmt.Errorf("%w: account has no %s configuration", ErrValidation, protocol)
+	}
+	p, err := s.protocolFor(protocol)
+	if err != nil {
+		return nil, "", err
+	}
+	if p.Fetcher == nil {
+		return nil, "", fmt.Errorf("account: protocol %q registers no fetcher", protocol)
 	}
 
 	secret, err := s.repo.Secret(ctx, accountID)
 	if err != nil {
 		return nil, "", err
 	}
-
-	switch protocol {
-	case "imap":
-		if s.imapFactory == nil {
-			return nil, "", errors.New("account: imap not wired up yet (see PLAN.md Fase 3)")
-		}
-		return s.imapFactory(*cfg, a.Username, secret), protocol, nil
-	case "pop3":
-		if s.pop3Factory == nil {
-			return nil, "", errors.New("account: pop3 not wired up yet (see PLAN.md Fase 4)")
-		}
-		return s.pop3Factory(*cfg, a.Username, secret), protocol, nil
-	}
-	return nil, "", fmt.Errorf("%w: unreachable protocol %q", ErrValidation, protocol)
+	return p.Fetcher(*cfg, a.Username, secret), protocol, nil
 }
 
 // FetchMessages returns up to limit messages (skipping offset) for
-// protocol ("imap" or "pop3") + folder on the given account.
+// protocol ("imap" or "pop3") + folder on the given account. limit <= 0
+// falls back to DefaultFetchLimit (single source of truth for both the
+// REST and MCP adapters).
 //
-// Unless refresh is true, it serves from messages_cache first (see
-// Repository.ListMessages) and only dials the mail server when the
-// cache has nothing for this exact (account, protocol, folder) yet —
-// this is what makes "fetch berikutnya lebih cepat" (PRD.MD §6.3)
-// literally true: the first call for a mailbox pays the network cost
-// and populates the cache, later calls don't. Pass refresh=true (or
-// call CheckNew, which always dials) to force a live re-fetch that
-// also refreshes the cache — e.g. after the caller knows new mail has
-// arrived.
+// Unless refresh is true, it serves from the Message cache (see
+// MessageCache.Get) — but only when the cache actually covers the
+// requested window. It dials the mail server when the cache can't
+// answer: nothing cached yet, the window extends past what's been
+// cached, or the mailbox isn't known to be fully cached. This is what
+// makes "fetch berikutnya lebih cepat" (PRD.MD §6.3) literally true
+// without silently truncating a larger request to an older, smaller
+// cached page (a real bug — see CODE_REVIEW.md round 5). Pass
+// refresh=true (or call CheckNew, which always dials) to force a live
+// re-fetch that also refreshes the cache.
 func (s *Service) FetchMessages(ctx context.Context, accountID, protocol, folder string, limit, offset int, refresh bool) ([]mailer.Message, error) {
-	folder = mailer.DefaultFolder(folder)
+	if limit <= 0 {
+		limit = DefaultFetchLimit
+	}
 	fetcher, protocol, err := s.resolveFetcher(ctx, accountID, protocol)
 	if err != nil {
 		return nil, err
 	}
 	// protocol is now resolveFetcher's resolved value (never ""), used
 	// below for the cache key — see resolveFetcher's doc comment.
+	folder = canonicalFolder(protocol, folder)
+	key := CacheKey{AccountID: accountID, Protocol: protocol, Folder: folder}
+	window := Window{Limit: limit, Offset: offset}
 
 	if !refresh {
-		cached, err := s.repo.ListMessages(ctx, accountID, protocol, folder, limit, offset)
+		cached, served, err := s.cache.Get(ctx, key, window)
 		if err != nil {
 			return nil, err
 		}
-		if len(cached) > 0 {
+		if served {
 			return cached, nil
 		}
 	}
@@ -356,7 +335,10 @@ func (s *Service) FetchMessages(ctx context.Context, accountID, protocol, folder
 	if err != nil {
 		return nil, fmt.Errorf("account: fetch: %w", err)
 	}
-	if err := s.repo.UpsertMessages(ctx, accountID, protocol, msgs); err != nil {
+	if err := s.cache.Upsert(ctx, key, msgs, offset); err != nil {
+		return nil, err
+	}
+	if err := s.cache.Record(ctx, key, window, len(msgs)); err != nil {
 		return nil, err
 	}
 	return msgs, nil
@@ -364,14 +346,14 @@ func (s *Service) FetchMessages(ctx context.Context, accountID, protocol, folder
 
 // CheckNew reports the current unread count (protocol-reported, IMAP
 // only — see mailer.Checker) and how many messages among the most
-// recent defaultCheckFetchLimit are not already in messages_cache
+// recent defaultCheckFetchLimit are not already in the Message cache
 // ("new since last check"), then updates the cache.
 func (s *Service) CheckNew(ctx context.Context, accountID, protocol, folder string) (unread, newCount int, err error) {
-	folder = mailer.DefaultFolder(folder)
 	fetcher, protocol, err := s.resolveFetcher(ctx, accountID, protocol)
 	if err != nil {
 		return 0, 0, err
 	}
+	folder = canonicalFolder(protocol, folder)
 
 	if checker, ok := fetcher.(mailer.Checker); ok {
 		unread, err = checker.Check(ctx, folder)
@@ -380,7 +362,8 @@ func (s *Service) CheckNew(ctx context.Context, accountID, protocol, folder stri
 		}
 	}
 
-	existing, err := s.repo.ExistingUIDs(ctx, accountID, protocol, folder)
+	key := CacheKey{AccountID: accountID, Protocol: protocol, Folder: folder}
+	existing, err := s.cache.ExistingUIDs(ctx, key)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -393,7 +376,13 @@ func (s *Service) CheckNew(ctx context.Context, accountID, protocol, folder stri
 			newCount++
 		}
 	}
-	if err := s.repo.UpsertMessages(ctx, accountID, protocol, msgs); err != nil {
+	if err := s.cache.Upsert(ctx, key, msgs, 0); err != nil {
+		return 0, 0, err
+	}
+	// Record this fetch's coverage too, so a subsequent cached
+	// FetchMessages whose window fits inside defaultCheckFetchLimit can
+	// answer without dialing.
+	if err := s.cache.Record(ctx, key, Window{Limit: defaultCheckFetchLimit}, len(msgs)); err != nil {
 		return 0, 0, err
 	}
 	return unread, newCount, nil
@@ -402,15 +391,15 @@ func (s *Service) CheckNew(ctx context.Context, accountID, protocol, folder stri
 // MarkRead marks the message identified by uid in folder as read (see
 // PRD.MD §6.3 "mark as read"). Only protocols whose Fetcher also
 // implements mailer.Marker support this — currently IMAP only, via the
-// \Seen flag; POP3 has no per-message flag concept. Also updates
-// messages_cache so a subsequent cached FetchMessages call reflects
+// \Seen flag; POP3 has no per-message flag concept. Also updates the
+// Message cache so a subsequent cached FetchMessages call reflects
 // the new read state without a live re-fetch.
 func (s *Service) MarkRead(ctx context.Context, accountID, protocol, folder, uid string) error {
-	folder = mailer.DefaultFolder(folder)
 	fetcher, protocol, err := s.resolveFetcher(ctx, accountID, protocol)
 	if err != nil {
 		return err
 	}
+	folder = canonicalFolder(protocol, folder)
 	marker, ok := fetcher.(mailer.Marker)
 	if !ok {
 		return fmt.Errorf("%w: protocol %q does not support marking messages as read", ErrValidation, protocol)
@@ -418,5 +407,5 @@ func (s *Service) MarkRead(ctx context.Context, accountID, protocol, folder, uid
 	if err := marker.MarkRead(ctx, folder, uid); err != nil {
 		return fmt.Errorf("account: mark read: %w", err)
 	}
-	return s.repo.MarkMessageRead(ctx, accountID, protocol, folder, uid)
+	return s.cache.MarkRead(ctx, CacheKey{AccountID: accountID, Protocol: protocol, Folder: folder}, uid)
 }

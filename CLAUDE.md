@@ -22,7 +22,7 @@ make coverage                         # go tool cover report
 go test ./...                                    # equivalent to make test
 go test -tags integration ./...                  # equivalent to make test-integration
 go test -race -tags integration ./...            # requires cgo/gcc — not available on every dev machine
-go test ./internal/account/ -run TestServiceSend  # single test
+go test ./internal/account/ -run TestService_FetchMessages  # single test (package account)
 
 go build -tags xmailtray ./...        # also compile Windows-tray-only files
 go vet -tags xmailtray ./...
@@ -40,7 +40,7 @@ No test framework beyond stdlib `testing` + table-driven tests (deliberate, mini
 Four rules drive almost every structural decision:
 
 1. **One behavior, three entrypoints.** `internal/app.Run(ctx, cfg)` is the only place that wires storage → account service → mailer implementations → API server → MCP server. `cmd/xmail` (headless) and `cmd/xmail-tray` (Windows) both just call it. Never put business logic in `cmd/`.
-2. **Protocol logic is hidden behind interfaces** (`internal/mailer/types.go`: `Sender`, `Fetcher`, `Checker`, `FetcherChecker`), implemented in `internal/mailer/{smtp,imap,pop3}` and dispatched by `account.Service`. Nothing outside `internal/mailer/*` and `internal/app` imports a concrete protocol package.
+2. **Protocol logic is hidden behind interfaces** (`internal/mailer/types.go`: `Sender`, `Fetcher`, `Checker`, `Marker`, `FetcherChecker`), implemented in `internal/mailer/{smtp,imap,pop3}` and dispatched by `account.Service`. Nothing outside `internal/mailer/*` and `internal/app` imports a concrete protocol package.
 3. **REST and MCP are two thin adapters over the same `account.Service`** (`internal/api`, `internal/mcpserver`). There is exactly one implementation of each business operation (send/fetch/check) — if REST and MCP disagree, the bug is in one of the adapters, never in `Service`.
 4. **Domain models never leak secrets across a boundary.** `account.Account` has no plaintext password field; credentials live only in the encrypted `credentials` table via `Repository.Secret`. `internal/api/dto.go` and `mcpserver`'s `accountSummary` use separate request/response shapes from the domain model specifically to prevent a stray struct-literal typo from serializing a password.
 
@@ -57,3 +57,13 @@ Build tag note: `cmd/xmail-tray/*.go` and `internal/winservice/*.go` are gated `
 ## Required environment variables
 
 `XMAIL_ENCRYPTION_KEY` (base64 of 32 random bytes, `openssl rand -base64 32`) and `XMAIL_API_KEY` are required. `XMAIL_LISTEN_ADDR` (default `:8080`), `XMAIL_DB_PATH` (default `xmail.db`), `XMAIL_MCP_STDIO` are optional. See `.env.example`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as local markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.

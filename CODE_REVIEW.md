@@ -261,3 +261,113 @@ Verifikasi langsung ke kode (bukan percaya klaim dokumen) atas perbaikan yang te
 - **Standards:** 7/7 temuan putaran 4 **fixed** (terverifikasi di kode + test). **Spec:** 8/8 **ditutup** (5 fixed di kode/dokumen, 2 didokumentasikan sebagai backlog/ketegangan desain, 1 diklarifikasi di spec agar match kode). Tidak ada regresi fungsional.
 - Perbaikan-perbaikan ini memperkenalkan **1 temuan nyata baru** (path DB relatif pada Windows Service, #A) + 3 minor (1 fungsional kecil, 2 drift dokumen).
 - Terburuk: **#A** — perbaikan `EnvVars` sudah benar arahnya, tetapi service terinstall dengan konfigurasi default masih bisa gagal start karena `XMAIL_DB_PATH` relatif terhadap `System32`.
+
+**Resolusi (PLAN.md §10.7)**:
+
+- **#A fixed** — `buildServiceConfig` sekarang meng-absolutkan `XMAIL_DB_PATH` (`filepath.Abs`) sebelum ditulis ke `EnvVars`; regression test `TestBuildServiceConfig_AbsolutizesDBPath` (assert path absolut + masih berakhiran `xmail.db`). Catatan: `filepath.Abs` memakai cwd proses interaktif saat install, bukan direktori exe — tray foreground & service konsisten selama dijalankan dari direktori yang sama.
+- **#B fixed** — `XMAIL_MCP_STDIO` dipropagasi (`strconv.FormatBool(cfg.MCPStdioEnable)`); di-assert di `TestBuildServiceConfig_EnvVarsRoundTrip`.
+- **#C/#D fixed** — `README.MD` tidak lagi menyebut angka putaran/temuan yang rapuh; `ARCHITECTURE.md` §8 paragraf pembuka diperbarui; pemetaan penomoran `CODE_REVIEW.md` (sesi review) vs `PLAN.md §10` (siklus resolusi) dicatat eksplisit di PLAN §10.7.
+
+Verifikasi akhir: `go build`/`go vet` (default + `-tags xmailtray`) bersih; `go test ./...` hijau; `go test -tags integration ./...` hijau; `go test -tags xmailtray ./internal/winservice/` = 2 hijau.
+
+---
+
+# Review Dua-Axis (putaran 5) — worktree vs `main`
+
+Review dua-axis penuh dijalankan dari nol, kedua axis oleh sub-agent terpisah. Titik tetap: `main` (= `66ebca7` "Init empty repo"). Perintah diff: `git diff main` — mencakup commit implementasi `a982ff0` plus perubahan working tree yang belum di-commit (`internal/winservice/service.go`, `internal/winservice/service_test.go`, `ARCHITECTURE.md`, `CODE_REVIEW.md`, `PLAN.md`, `README.MD`).
+
+- **Sumber spec:** `PRD.MD` + `PLAN.md`.
+- **Sumber standards:** `CLAUDE.md`, `ARCHITECTURE.md`, `PLAN.md`, `.commandcode/taste/taste-—-general/taste.md`, plus smell baseline Fowler.
+- **Sikap:** arsip putaran 1-4 di `CODE_REVIEW.md` **tidak** dipercaya; setiap klaim "fixed" diverifikasi ulang ke kode. Arsip dipakai hanya sebagai checklist.
+- **Baseline teknis (diverifikasi ulang):** `go build ./...`, `go vet ./...` (+ `-tags xmailtray`) bersih; `go test ./...` = 71 `=== RUN`; `go test -tags integration ./...` = 90; `go test -tags xmailtray ./internal/winservice/` = 2.
+
+## Standards
+
+**Pelanggaran standard terdokumentasi (keras): 2.**
+
+1. **Kontrak tool MCP di `PLAN.md` §4 basi vs kode.** `internal/mcpserver/server.go`: `send_email` (`sendEmailArgs` L145-152, ditambahkan §10.6 #22) punya `cc`/`bcc` tetapi baris §4 tidak menyebutnya; `fetch_emails` menerima `protocol`; `check_new_emails` (`checkNewEmailsArgs`) menerima `protocol`/`folder` padahal §4 menyatakan argumennya hanya `{account_id}`. (Taste: dokumen di-update saat fitur berubah; putaran 4 memperlakukan doc-drift sebagai keras.)
+2. **`/healthz` melanggar kontrak envelope.** `PLAN.md` §3 "Semua response: `{data, error}`"; `ARCHITECTURE.md` §3.4 "tanpa pengecualian". `internal/api/server.go:37-40` menulis `ok` mentah. *Borderline* — probe liveness konvensional, tetapi aturan blanket yang sama dipakai putaran 1 untuk menandai `DELETE` 204.
+
+**Baseline smell (semua judgement call): 4.**
+
+- **Duplicated Code (minor)** — default `limit` diterapkan per-adapter: `internal/api/messages_handler.go:30` (`queryIntOr(..., account.DefaultFetchLimit)`) vs `internal/mcpserver/server.go` (`if limit <= 0 { limit = account.DefaultFetchLimit }`). Nilai sama, bentuk digandakan.
+- **Mysterious Name / doc drift** — komentar `resolveFetcher` menyatakan ia mengembalikan "…plus its decrypted secret", tetapi signature-nya `(fetcher, resolvedProtocol, err)` tanpa secret (`internal/account/service.go:255`).
+- **Urutan error non-deterministik** — `Validate` mengiterasi `map[string]*ConnectionConfig{…}` (`service.go:180`); urutan map acak, jadi error host/port protokol mana yang muncul bisa berubah-ubah.
+- **Comment drift** — komentar "defaultFetchLimit bounds…" berada di atas `const defaultCheckFetchLimit` (`service.go:96`).
+
+**Disuppress** (standard repo terdokumentasi mengalahkan baseline): Repeated Switches pada `protocol string` (`PLAN.md` §10.4 #12); Data Clumps `(cfg,username,secret)` (§10.4 #11); MCP `send_email` attachments REST-only (§10.6 #22).
+
+**Terverifikasi patuh** (dicek ke kode, tidak dipercaya dari arsip): de-dup `mailer.DefaultFolder`/`WindowRange` nyata (sisa literal `"INBOX"` cuma `pop3/client.go:110`, sah); `queryOr` sudah hilang; `timeFormat`→`time.RFC3339`; `serverVersion` sudah di-thread `cmd → app.Run(ctx,cfg,version) → mcpserver.New`; `connFields` meruntuhkan tiga nil-guard; paket mailer konkret hanya diimpor `internal/app`; tak ada business logic di `cmd/`; build tag benar; tanpa testify; tanpa `InsecureSkipVerify`; skema MCP dideklarasikan eksplisit; log tanpa body email. `EnvVars`, absolutisasi `DBPath`, dan propagasi `XMAIL_MCP_STDIO` di winservice ada dan di-assert test.
+
+## Spec
+
+**(a) Requirement hilang / parsial: 3.**
+
+1. **Peran MCP Client — hilang.** `PRD.MD` §3 "…dan juga mampu berperan sebagai MCP Client…"; §6.4 "kemampuan service untuk memanggil MCP server eksternal". Tidak ada kode (tanpa `mcpserver/client.go`). §6.4 kini melabelinya "Backlog penuh", jadi teks requirement cocok tetapi kapabilitasnya absen.
+2. **MCP `send_email` membuang attachments — parsial.** `PRD.MD` §6.2 "Dukung attachment, HTML & plain text body, CC/BCC, custom headers dasar." REST `sendRequest` membawa `Attachments`; `sendEmailArgs` MCP tidak punya. Sengaja (§10.6 #22), tetapi permukaan MCP jadi realisasi parsial.
+3. **`test-connection` "sebelum disimpan permanen" — parsial.** `PRD.MD` §6.1. Route `POST /accounts/{id}/test-connection` memanggil `repo.Get`, jadi hanya bisa memvalidasi akun yang sudah tersimpan.
+
+**(b) Scope creep (di luar sketsa `PRD.MD` §6.6/§7): 2.**
+
+- `GET /healthz`, tray "Open dashboard", transport MCP stdio (`XMAIL_MCP_STDIO`), dan `scripts/release.ps1` — sebagian besar belakangan di-retro-dokumentasikan ke PRD §6.6/§7.
+- `CLAUDE.md` dan `.claude/skills/xmail/SKILL.md` — absen dari struktur PRD/PLAN; artefak yang tidak diminta.
+
+**(c) Terimplementasi tapi salah: 3.**
+
+1. **🔴 Cache-first memaku window (diverifikasi langsung).** `Service.FetchMessages` (`internal/account/service.go:345-353`) mengembalikan baris cache setiap `len(cached) > 0` dan **tidak pernah** dial ke server. Setelah cache `limit=20`, `GET /messages?limit=50` mengembalikan 20 baris tanpa menghubungi server — pemotongan diam-diam vs `PRD.MD` §6.3 "Fetch daftar email (dengan pagination…)". **Terburuk di axis ini.**
+2. **`/healthz` bukan JSON.** `internal/api/server.go:37-40` menulis `"ok"` polos, bukan envelope — bertentangan `PRD.MD` §7 "Response format JSON konsisten dengan `{data, error}` envelope."
+3. **Komentar `imap.Fetch` keliru.** Komentar bilang "sort newest-first by UID" padahal kode hanya membalik slice buffer (bukan sort UID); kebenaran urutan newest-first diam-diam bergantung pada server mengembalikan ascending.
+
+## Ringkasan
+
+- **Standards — 6 temuan (2 keras, 4 judgement).** Terburuk: kontrak tool MCP di `PLAN.md` §4 basi vs API yang benar-benar dikirim (`internal/mcpserver/server.go`).
+- **Spec — 8 temuan (3 hilang/parsial, 2 scope creep, 3 terimplementasi-tapi-salah).** Terburuk: cache-first memaku window — `?limit` yang lebih besar diam-diam ditruncate ke ukuran cache lama (`internal/account/service.go:345`).
+
+Kedua axis sengaja tidak digabung/di-rerank. `/healthz` (pelanggaran envelope) muncul **independen di kedua axis**, jadi ini temuan yang saling terkonfirmasi dan paling layak digarap berikutnya bersama bug cache-first.
+
+---
+
+# Verifikasi Ulang (putaran 6 — setelah perbaikan putaran 5)
+
+Verifikasi langsung ke kode (bukan percaya klaim dokumen) atas perbaikan temuan putaran 5. Titik tetap `main` (`66ebca7`) tidak berubah.
+
+**Perubahan yang direview:** `internal/account/service.go`, `internal/account/messages.go`, `internal/account/messages_test.go`, `internal/api/server.go`, `internal/api/messages_handler.go`, `internal/api/server_test.go`, `internal/mailer/imap/client.go`, `internal/mcpserver/server.go`, migrasi baru `internal/storage/migrations/0004_message_cache_state.sql`, plus `PRD.MD`/`PLAN.md`/`ARCHITECTURE.md`.
+
+**Baseline teknis (diukur ulang, semua hijau):** `go build`/`go vet` (default + `-tags xmailtray`) bersih; `go test ./...` = **74 `=== RUN`** (naik dari 71); `go test -tags integration ./...` = **93** (naik dari 90); `go test -tags xmailtray ./internal/winservice/` = 2.
+
+## Standards — status per temuan
+
+| # | Temuan | Status |
+|---|---|---|
+| 1 | Kontrak tool MCP §4 basi (`send_email` cc/bcc, `fetch_emails` protocol, `check_new_emails` protocol/folder) | **Fixed** — tabel §4 disinkronkan dengan `internal/mcpserver/server.go` |
+| 2 | `/healthz` melanggar envelope `{data,error}` | **Fixed** — `writeData(w, 200, {"status":"ok"})`; `TestHealthz_NoAuthRequired` assert `data.status` + `error:null` |
+| 3 | Duplikasi default `limit` (REST vs MCP) + `limit=0` eksplisit berbeda perilaku | **Fixed** — normalisasi pindah ke `Service.FetchMessages`; kedua adapter meneruskan apa adanya. Test `TestService_FetchMessages_ZeroLimitUsesDefault` |
+| 4 | Komentar `resolveFetcher` klaim secret | **Fixed** — klaim dihapus, komentar di-merge |
+| 5 | `Validate` iterasi map → urutan error non-deterministik | **Fixed** — slice berurutan tetap smtp→imap→pop3 |
+| 6 | Komentar `defaultFetchLimit` nyasar | **Fixed** — menunjuk `defaultCheckFetchLimit` |
+
+## Spec — status per temuan
+
+| # | Temuan | Status |
+|---|---|---|
+| 1 | Peran MCP Client | **Backlog (tidak diubah)** — PRD §6.4 sudah menyatakannya backlog penuh; tidak diimplementasikan |
+| 2 | MCP `send_email` buang attachments | **Tidak diubah (sadar)** — PRD §6.2 terpenuhi via REST; alasan UX di §10.6 #22; §4 kini menyatakannya eksplisit |
+| 3 | `test-connection` sebelum save | **Tidak diubah (sadar)** — ketegangan desain yang didokumentasikan di PRD §6.1 |
+| 4 | 🔴 Cache-first memaku window | **Fixed** — `messages_cache_state` (coverage/exhausted) + `CacheState`/`RecordFetch`; `FetchMessages` hanya serve cache kalau `exhausted` atau `offset+limit <= coverage`. Regression test `TestService_FetchMessages_LargerWindowRefetches` + `TestRepository_CacheState`. Dikonfirmasi dari kode: window 30-pesan kini dial ulang untuk `limit=50`, dan tidak dial lagi setelah mailbox exhausted |
+| 5 | `/healthz` bukan JSON | **Fixed** — sama dengan Standards #2 |
+| 6 | Komentar `imap.Fetch` "sort by UID" vs kenyataan | **Fixed** — kini `sort.Slice` descending UID betulan |
+| 7 | Scope creep (`healthz`/tray/stdio/release.ps1) | **Sudah terdokumentasikan** di PLAN/PRD sebelumnya |
+| 8 | Scope creep artefak agent (`CLAUDE.md`, `.claude/skills/xmail/SKILL.md`) | **Didokumentasikan** di PLAN §10.8 #37 |
+
+## Temuan baru / sisa
+
+Tidak ada regresi fungsional baru. Catatan:
+
+1. **(Minor, desain)** `messages_cache_state` memakai `coverage` naik-monotonik + `exhausted` latch. Kalau mailbox bertambah besar setelah `exhausted` di-set, cache tetap dianggap bisa menjawab sampai ada `refresh=true`/`CheckNew` — memang semantik cache (bukan stale-cache bug), tapi perlu diingat saat mengubah invalidation.
+2. **(Minor)** `go test -race` tetap belum pernah dijalankan (tidak ada toolchain cgo) — warisan, bukan regresi.
+
+## Ringkasan
+
+- **Standards:** 6/6 temuan putaran 5 **fixed** (terverifikasi di kode + test).
+- **Spec:** 3 bug/drift **fixed** (window cache, healthz JSON, komentar imap) + 3 item yang memang backlog/keputusan sadar (tidak diubah, dan §4 kini menyatakannya eksplisit) + 2 scope-creep yang didokumentasikan.
+- **Terburuk yang diperbaiki:** bug window cache — request `?limit` yang lebih besar tidak lagi diam-diam dipotong ke halaman cache lama, dijaga regression test di level Service dan Repository.

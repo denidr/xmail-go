@@ -7,8 +7,10 @@ Dokumen lengkap:
 - [PLAN.md](./PLAN.md) — rencana implementasi teknis: struktur project, skema DB, kontrak API/MCP, urutan kerja per fase, histori keputusan.
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — **referensi teknis codebase saat ini**: apa isinya, bagaimana kerjanya, dan cara menambah fitur. Ditulis supaya cepat dipahami manusia maupun LLM agent yang akan mengerjakan repo ini — mulai dari sini kalau mau langsung ubah/tambah kode.
 - [CODE_REVIEW.md](./CODE_REVIEW.md) — arsip hasil code review independen; resolusinya (fix apa untuk temuan apa) dicatat di PLAN.md §10.
+- [CONTEXT.md](./CONTEXT.md) — glosarium domain: istilah inti (Account, Message, Message cache, Coverage, Exhausted, Fetch window, dst) beserta istilah yang dihindari.
+- [docs/adr/](./docs/adr/) — Architecture Decision Records: keputusan arsitektur beserta alasannya (mulai dari ADR-0001 soal penyatuan dispatch protokol).
 
-Status saat ini: **semua fase (1-8) selesai & diverifikasi nyata** — core, SMTP, IMAP, POP3, MCP, hardening review, Windows tray+service, dan ketiga target rilis (Docker x64, Docker Armbian/arm64, Windows x64) sudah dibuild, dijalankan, dan di-smoke-test langsung (bukan cuma lolos compile). Repo juga sudah melalui **3 putaran code review independen** (`CODE_REVIEW.md`) — total 25 temuan (termasuk 3 pelanggaran keras di putaran ketiga, terburuk: Windows Service yang di-install tidak akan pernah bisa start) semuanya diperbaiki dengan regression test, dicatat lengkap di PLAN.md §10. Lihat PLAN.md §5 untuk detail tiap fase.
+Status saat ini: **semua fase (1-8) selesai & diverifikasi nyata** — core, SMTP, IMAP, POP3, MCP, hardening review, Windows tray+service, dan ketiga target rilis (Docker x64, Docker Armbian/arm64, Windows x64) sudah dibuild, dijalankan, dan di-smoke-test langsung (bukan cuma lolos compile). Repo juga sudah melalui beberapa putaran review independen (`CODE_REVIEW.md` — arsip lengkap tiap putaran; ringkasan resolusi per temuan di PLAN.md §10). Salah satu putaran menemukan 3 pelanggaran keras (terburuk: Windows Service yang di-install tidak akan pernah bisa start) — semuanya diperbaiki dengan regression test, bukan sekadar dicatat. Lihat PLAN.md §5 untuk detail tiap fase.
 
 ## Fitur
 

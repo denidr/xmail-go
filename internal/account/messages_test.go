@@ -2,58 +2,68 @@ package account
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"xmail/internal/mailer"
 )
 
-func TestRepository_UpsertAndListMessages(t *testing.T) {
-	ctx := context.Background()
+// newTestCache returns a Repository (for accounts, to satisfy foreign
+// keys) and a MessageCache over the same database.
+func newTestCache(t *testing.T) (*Repository, *MessageCache) {
+	t.Helper()
 	repo := newTestRepo(t)
+	return repo, NewMessageCache(repo.db)
+}
+
+func TestMessageCache_UpsertAndList(t *testing.T) {
+	ctx := context.Background()
+	repo, cache := newTestCache(t)
 
 	created, err := repo.Create(ctx, sampleAccount(), "s3cret")
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	key := CacheKey{AccountID: created.ID, Protocol: "imap", Folder: "INBOX"}
 
 	msgs := []mailer.Message{
 		{UID: "1", Folder: "INBOX", Subject: "First", From: "a@x.com", IsRead: true},
 		{UID: "2", Folder: "INBOX", Subject: "Second", From: "b@x.com", IsRead: false},
 	}
-	if err := repo.UpsertMessages(ctx, created.ID, "imap", msgs); err != nil {
-		t.Fatalf("UpsertMessages() error = %v", err)
+	if err := cache.Upsert(ctx, key, msgs, 0); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
 	}
 
-	got, err := repo.ListMessages(ctx, created.ID, "imap", "INBOX", 10, 0)
+	got, err := cache.list(ctx, key, Window{Limit: 10})
 	if err != nil {
-		t.Fatalf("ListMessages() error = %v", err)
+		t.Fatalf("list() error = %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("ListMessages() len = %d, want 2", len(got))
+		t.Fatalf("list() len = %d, want 2", len(got))
 	}
 	if got[0].UID != "1" || got[1].UID != "2" {
-		t.Fatalf("ListMessages() order = [%s, %s], want [1, 2] (msgs[] order must be preserved — see TestRepository_UpsertMessages_PreservesOrder)", got[0].UID, got[1].UID)
+		t.Fatalf("list() order = [%s, %s], want [1, 2] (msgs[] order must be preserved — see TestMessageCache_UpsertPreservesOrder)", got[0].UID, got[1].UID)
 	}
 
 	// Upserting the same UID again with a changed field must update in
 	// place, not duplicate.
 	msgs[1].Subject = "Second (updated)"
 	msgs[1].IsRead = true
-	if err := repo.UpsertMessages(ctx, created.ID, "imap", msgs); err != nil {
-		t.Fatalf("UpsertMessages() (update) error = %v", err)
+	if err := cache.Upsert(ctx, key, msgs, 0); err != nil {
+		t.Fatalf("Upsert() (update) error = %v", err)
 	}
-	got, err = repo.ListMessages(ctx, created.ID, "imap", "INBOX", 10, 0)
+	got, err = cache.list(ctx, key, Window{Limit: 10})
 	if err != nil {
-		t.Fatalf("ListMessages() error = %v", err)
+		t.Fatalf("list() error = %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("ListMessages() after re-upsert len = %d, want 2 (no duplicates)", len(got))
+		t.Fatalf("list() after re-upsert len = %d, want 2 (no duplicates)", len(got))
 	}
 }
 
-// TestRepository_UpsertMessages_PreservesOrder is the regression test
-// for a real bug found by external code review: UpsertMessages shared
-// one `fetched_at` timestamp across an entire batch, so
+// TestMessageCache_UpsertPreservesOrder is the regression test for a
+// real bug found by external code review: Upsert shared one
+// `fetched_at` timestamp across an entire batch, so
 // "ORDER BY fetched_at DESC, rowid DESC" fell back to rowid DESC to
 // break same-batch ties — but SQLite assigns rowids in insertion
 // order, and msgs is inserted newest-first (matching Fetch's own
@@ -63,14 +73,15 @@ func TestRepository_UpsertAndListMessages(t *testing.T) {
 // oldest-first as soon as the cache was warm. Fixed via an explicit
 // sort_rank column (migrations/0003_message_sort_rank.sql) set from
 // each message's position in msgs, independent of rowid/insert order.
-func TestRepository_UpsertMessages_PreservesOrder(t *testing.T) {
+func TestMessageCache_UpsertPreservesOrder(t *testing.T) {
 	ctx := context.Background()
-	repo := newTestRepo(t)
+	repo, cache := newTestCache(t)
 
 	created, err := repo.Create(ctx, sampleAccount(), "s3cret")
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	key := CacheKey{AccountID: created.ID, Protocol: "imap", Folder: "INBOX"}
 
 	// Newest-first, exactly as mailer.Fetcher.Fetch returns it.
 	newestFirst := []mailer.Message{
@@ -78,15 +89,15 @@ func TestRepository_UpsertMessages_PreservesOrder(t *testing.T) {
 		{UID: "2", Folder: "INBOX", Subject: "Middle"},
 		{UID: "1", Folder: "INBOX", Subject: "Oldest"},
 	}
-	if err := repo.UpsertMessages(ctx, created.ID, "imap", newestFirst); err != nil {
-		t.Fatalf("UpsertMessages() error = %v", err)
+	if err := cache.Upsert(ctx, key, newestFirst, 0); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
 	}
 
 	assertOrder := func(t *testing.T, label string) {
 		t.Helper()
-		got, err := repo.ListMessages(ctx, created.ID, "imap", "INBOX", 10, 0)
+		got, err := cache.list(ctx, key, Window{Limit: 10})
 		if err != nil {
-			t.Fatalf("%s: ListMessages() error = %v", label, err)
+			t.Fatalf("%s: list() error = %v", label, err)
 		}
 		if len(got) != 3 {
 			t.Fatalf("%s: len = %d, want 3", label, len(got))
@@ -106,32 +117,109 @@ func TestRepository_UpsertMessages_PreservesOrder(t *testing.T) {
 	// hitting existing rows via ON CONFLICT DO UPDATE) — order must
 	// survive this too, which is exactly what the old rowid-based
 	// tie-break got wrong.
-	if err := repo.UpsertMessages(ctx, created.ID, "imap", newestFirst); err != nil {
-		t.Fatalf("UpsertMessages() (2nd, warm cache) error = %v", err)
+	if err := cache.Upsert(ctx, key, newestFirst, 0); err != nil {
+		t.Fatalf("Upsert() (2nd, warm cache) error = %v", err)
 	}
 	assertOrder(t, "after second upsert (warm cache)")
 }
 
-func TestRepository_ExistingUIDs(t *testing.T) {
+func TestMessageCache_ExistingUIDs(t *testing.T) {
 	ctx := context.Background()
-	repo := newTestRepo(t)
+	repo, cache := newTestCache(t)
 
 	created, err := repo.Create(ctx, sampleAccount(), "s3cret")
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if err := repo.UpsertMessages(ctx, created.ID, "imap", []mailer.Message{
+	key := CacheKey{AccountID: created.ID, Protocol: "imap", Folder: "INBOX"}
+	if err := cache.Upsert(ctx, key, []mailer.Message{
 		{UID: "1", Folder: "INBOX"}, {UID: "2", Folder: "INBOX"},
-	}); err != nil {
-		t.Fatalf("UpsertMessages() error = %v", err)
+	}, 0); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
 	}
 
-	existing, err := repo.ExistingUIDs(ctx, created.ID, "imap", "INBOX")
+	existing, err := cache.ExistingUIDs(ctx, key)
 	if err != nil {
 		t.Fatalf("ExistingUIDs() error = %v", err)
 	}
 	if !existing["1"] || !existing["2"] || existing["3"] {
 		t.Errorf("ExistingUIDs() = %v, want {1,2}", existing)
+	}
+}
+
+// TestMessageCache_Coverage locks in the Coverage/Exhausted semantics
+// behind the cache-window fix, exercised through Get's served result —
+// the predicate that used to live inline in Service.FetchMessages and
+// could only be observed by driving the whole Service (see
+// CODE_REVIEW.md round 5).
+func TestMessageCache_Coverage(t *testing.T) {
+	ctx := context.Background()
+	repo, cache := newTestCache(t)
+
+	created, err := repo.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	key := CacheKey{AccountID: created.ID, Protocol: "imap", Folder: "INBOX"}
+
+	served := func(label string, w Window) bool {
+		t.Helper()
+		_, ok, err := cache.Get(ctx, key, w)
+		if err != nil {
+			t.Fatalf("%s: Get() error = %v", label, err)
+		}
+		return ok
+	}
+
+	// Nothing cached yet: the cache covers no window.
+	if served("fresh", Window{Limit: 20}) {
+		t.Error("fresh cache served a window, want it to dial")
+	}
+
+	// Cache the newest 20 messages, then record that they were covered by
+	// a full page (a fetch that returned as many as it asked for).
+	rows := make([]mailer.Message, 20)
+	for i := range rows {
+		rows[i] = mailer.Message{UID: fmt.Sprintf("u%d", i+1), Folder: "INBOX"}
+	}
+	if err := cache.Upsert(ctx, key, rows, 0); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	// A full page grows Coverage without Exhausting.
+	if err := cache.Record(ctx, key, Window{Limit: 20}, 20); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if !served("after full page", Window{Limit: 20}) {
+		t.Error("window inside coverage not served, want served")
+	}
+	// A larger window must not be served from the smaller cache.
+	if served("larger window", Window{Limit: 50}) {
+		t.Error("window past coverage served, want it to dial")
+	}
+
+	// A short page latches Exhausted; any window is then answerable.
+	if err := cache.Record(ctx, key, Window{Limit: 50}, 30); err != nil {
+		t.Fatalf("Record() (short page) error = %v", err)
+	}
+	if !served("exhausted", Window{Limit: 100}) {
+		t.Error("window after exhaustion not served, want served")
+	}
+
+	// Coverage/Exhausted never regress on a smaller later page.
+	if err := cache.Record(ctx, key, Window{Limit: 10}, 10); err != nil {
+		t.Fatalf("Record() (smaller page) error = %v", err)
+	}
+	coverage, exhausted, err := cache.state(ctx, key)
+	if err != nil {
+		t.Fatalf("state() error = %v", err)
+	}
+	if coverage != 30 || !exhausted {
+		t.Errorf("state = (coverage=%d, exhausted=%v), want (30, true)", coverage, exhausted)
+	}
+
+	// State is per folder.
+	if _, ok, err := cache.Get(ctx, CacheKey{AccountID: created.ID, Protocol: "imap", Folder: "Archive"}, Window{Limit: 10}); err != nil || ok {
+		t.Errorf("Get(Archive) served = %v, err = %v; want fresh state", ok, err)
 	}
 }
 
@@ -142,14 +230,20 @@ func TestRepository_ExistingUIDs(t *testing.T) {
 type mockFetcherChecker struct {
 	fetchResult []mailer.Message
 	fetchErr    error
-	unread      int
-	checkErr    error
-	fetchCalls  *int
+	// fetchFn, when set, lets a test vary the result by the requested
+	// (limit, offset) — needed to exercise the cache-coverage logic.
+	fetchFn    func(limit, offset int) []mailer.Message
+	unread     int
+	checkErr   error
+	fetchCalls *int
 }
 
 func (m mockFetcherChecker) Fetch(ctx context.Context, folder string, limit, offset int) ([]mailer.Message, error) {
 	if m.fetchCalls != nil {
 		*m.fetchCalls++
+	}
+	if m.fetchFn != nil {
+		return m.fetchFn(limit, offset), m.fetchErr
 	}
 	return m.fetchResult, m.fetchErr
 }
@@ -168,7 +262,7 @@ func TestService_FetchMessages_CachesResult(t *testing.T) {
 	}
 
 	fixture := []mailer.Message{{UID: "u1", Folder: "INBOX", Subject: "Hi"}}
-	svc.SetIMAPFactory(func(cfg ConnectionConfig, username, secret string) mailer.FetcherChecker {
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
 		return mockFetcherChecker{fetchResult: fixture}
 	})
 
@@ -180,9 +274,9 @@ func TestService_FetchMessages_CachesResult(t *testing.T) {
 		t.Errorf("FetchMessages() = %v, want fixture", msgs)
 	}
 
-	cached, err := svc.repo.ListMessages(ctx, created.ID, "imap", "INBOX", 10, 0)
+	cached, err := svc.cache.list(ctx, CacheKey{AccountID: created.ID, Protocol: "imap", Folder: "INBOX"}, Window{Limit: 10})
 	if err != nil {
-		t.Fatalf("ListMessages() error = %v", err)
+		t.Fatalf("list() error = %v", err)
 	}
 	if len(cached) != 1 {
 		t.Errorf("cache after FetchMessages len = %d, want 1", len(cached))
@@ -192,7 +286,7 @@ func TestService_FetchMessages_CachesResult(t *testing.T) {
 // TestService_FetchMessages_ServesFromCacheOnSecondCall is the
 // regression test for CODE_REVIEW.md "message cache write-only": the
 // second FetchMessages call for the same (account, protocol, folder)
-// must be served from messages_cache, not by dialing the mail server
+// must be served from the Message cache, not by dialing the mail server
 // again — proven here by a Fetch call counter, not just by inspecting
 // the cache table (which was already populated even in the old,
 // buggy always-live-fetch behavior).
@@ -207,7 +301,7 @@ func TestService_FetchMessages_ServesFromCacheOnSecondCall(t *testing.T) {
 
 	calls := 0
 	fixture := []mailer.Message{{UID: "u1", Folder: "INBOX", Subject: "Hi"}}
-	svc.SetIMAPFactory(func(cfg ConnectionConfig, username, secret string) mailer.FetcherChecker {
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
 		return mockFetcherChecker{fetchResult: fixture, fetchCalls: &calls}
 	})
 
@@ -238,6 +332,113 @@ func TestService_FetchMessages_ServesFromCacheOnSecondCall(t *testing.T) {
 	}
 }
 
+// TestService_FetchMessages_LargerWindowRefetches is the regression test
+// for a real bug found by code review (round 5): FetchMessages served
+// the cache whenever it held *any* row, so a later, larger request was
+// silently truncated to the older, smaller cached page instead of
+// dialing for the bigger window.
+func TestService_FetchMessages_LargerWindowRefetches(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	// A 30-message mailbox, newest-first, sliced by the fetch window so a
+	// fetch returns a full page (== limit) for limits <= 30 and a short
+	// page for limits > 30.
+	all := make([]mailer.Message, 30)
+	for i := range all {
+		all[i] = mailer.Message{UID: fmt.Sprintf("u%d", 30-i), Folder: "INBOX"}
+	}
+
+	calls := 0
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{
+			fetchCalls: &calls,
+			fetchFn: func(limit, offset int) []mailer.Message {
+				if offset >= len(all) {
+					return nil
+				}
+				end := offset + limit
+				if end > len(all) {
+					end = len(all)
+				}
+				return all[offset:end]
+			},
+		}
+	})
+
+	// First call caches a 20-message window.
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(limit=20) error = %v", err)
+	}
+	if len(msgs) != 20 {
+		t.Fatalf("FetchMessages(limit=20) len = %d, want 20", len(msgs))
+	}
+	if calls != 1 {
+		t.Fatalf("fetchCalls after limit=20 = %d, want 1", calls)
+	}
+
+	// A larger request must NOT be served from the 20-row cache.
+	msgs, err = svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 50, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(limit=50) error = %v", err)
+	}
+	if len(msgs) != 30 {
+		t.Errorf("FetchMessages(limit=50) len = %d, want 30 (must dial for the bigger window)", len(msgs))
+	}
+	if calls != 2 {
+		t.Errorf("fetchCalls after limit=50 = %d, want 2 (cache only covered 20)", calls)
+	}
+
+	// The mailbox is now known to be fully cached (the limit=50 fetch
+	// returned a short page), so an even larger window is answerable
+	// without another dial.
+	msgs, err = svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 100, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(limit=100) error = %v", err)
+	}
+	if len(msgs) != 30 {
+		t.Errorf("FetchMessages(limit=100) len = %d, want 30", len(msgs))
+	}
+	if calls != 2 {
+		t.Errorf("fetchCalls after limit=100 = %d, want still 2 (mailbox exhausted, cache covers all)", calls)
+	}
+}
+
+// TestService_FetchMessages_ZeroLimitUsesDefault locks in that limit <= 0
+// is defaulted centrally in account.Service (shared by REST and MCP) —
+// REST's explicit limit=0 used to return nothing while MCP's returned
+// the default page, an adapter divergence.
+func TestService_FetchMessages_ZeroLimitUsesDefault(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var gotLimit int
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{fetchFn: func(limit, offset int) []mailer.Message {
+			gotLimit = limit
+			return nil
+		}}
+	})
+
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 0, 0, false); err != nil {
+		t.Fatalf("FetchMessages(limit=0) error = %v", err)
+	}
+	if gotLimit != DefaultFetchLimit {
+		t.Errorf("fetcher saw limit = %d, want DefaultFetchLimit (%d)", gotLimit, DefaultFetchLimit)
+	}
+}
+
 func TestService_CheckNew(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t)
@@ -248,7 +449,7 @@ func TestService_CheckNew(t *testing.T) {
 	}
 
 	// First check: nothing cached yet, both messages are "new".
-	svc.SetIMAPFactory(func(cfg ConnectionConfig, username, secret string) mailer.FetcherChecker {
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
 		return mockFetcherChecker{
 			unread: 3,
 			fetchResult: []mailer.Message{
@@ -288,5 +489,326 @@ func TestService_FetchMessages_UnknownProtocol(t *testing.T) {
 	}
 	if _, err := svc.FetchMessages(ctx, created.ID, "ftp", "INBOX", 10, 0, false); err == nil {
 		t.Error("FetchMessages() error = nil, want error for unknown protocol")
+	}
+}
+
+// folderCapturingFetcher wraps mockFetcherChecker, recording the folder
+// it was asked to fetch — used to prove account.Service hands a
+// folder-less protocol its only folder (INBOX).
+type folderCapturingFetcher struct {
+	mockFetcherChecker
+	gotFolder *string
+}
+
+func (f folderCapturingFetcher) Fetch(ctx context.Context, folder string, limit, offset int) ([]mailer.Message, error) {
+	*f.gotFolder = folder
+	return f.fetchResult, nil
+}
+
+// TestService_FetchMessages_POP3FolderCanonicalized locks in that a
+// folder-less protocol is keyed under its only folder (INBOX) no matter
+// what the caller asked for — so the Message cache key and the folder
+// recorded per message agree (see the architecture review's candidate
+// C; POP3 used to store under one folder while the key said another).
+func TestService_FetchMessages_POP3FolderCanonicalized(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+
+	acct := sampleAccount()
+	acct.POP3 = &ConnectionConfig{Host: "pop.example.com", Port: 995, TLSMode: TLSModeTLS}
+	created, err := svc.Create(ctx, acct, "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var gotFolder string
+	registerPOP3(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return folderCapturingFetcher{
+			mockFetcherChecker: mockFetcherChecker{fetchResult: []mailer.Message{{UID: "u1", Folder: "INBOX"}}},
+			gotFolder:          &gotFolder,
+		}
+	})
+
+	// A caller asking for a folder POP3 doesn't have still lands in INBOX.
+	if _, err := svc.FetchMessages(ctx, created.ID, "pop3", "Archive", 10, 0, false); err != nil {
+		t.Fatalf("FetchMessages() error = %v", err)
+	}
+	if gotFolder != "INBOX" {
+		t.Errorf("fetcher was handed folder %q, want INBOX (POP3 is folder-less)", gotFolder)
+	}
+
+	key := CacheKey{AccountID: created.ID, Protocol: ProtocolPOP3, Folder: "INBOX"}
+	got, err := svc.cache.list(ctx, key, Window{Limit: 10})
+	if err != nil {
+		t.Fatalf("list(INBOX) error = %v", err)
+	}
+	if len(got) != 1 || got[0].UID != "u1" {
+		t.Errorf("cache under INBOX = %v, want the fetched message", got)
+	}
+
+	// Nothing is recorded under the caller's folder, which POP3 has no
+	// concept of.
+	other := CacheKey{AccountID: created.ID, Protocol: ProtocolPOP3, Folder: "Archive"}
+	none, err := svc.cache.list(ctx, other, Window{Limit: 10})
+	if err != nil {
+		t.Fatalf("list(Archive) error = %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("cache under Archive = %v, want empty (POP3 is folder-less)", none)
+	}
+}
+
+// TestMessageCache_Record_OffsetDoesNotInflateCoverage: a fetch that
+// starts past the region already known to be contiguous from the top
+// proves nothing about the rows above it, so Record must leave coverage
+// alone rather than inflating it (which used to let a later offset=0
+// window be served from a truncated cache) or latching Exhausted.
+func TestMessageCache_Record_OffsetDoesNotInflateCoverage(t *testing.T) {
+	ctx := context.Background()
+	repo, cache := newTestCache(t)
+	created, err := repo.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	key := CacheKey{AccountID: created.ID, Protocol: ProtocolIMAP, Folder: "INBOX"}
+
+	// A deep, short page with nothing cached above it records nothing.
+	if err := cache.Record(ctx, key, Window{Limit: 20, Offset: 100}, 5); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if coverage, exhausted, err := cache.state(ctx, key); err != nil || coverage != 0 || exhausted {
+		t.Errorf("state after deep page = (coverage=%d, exhausted=%v, err=%v), want (0, false, nil)", coverage, exhausted, err)
+	}
+
+	// Cache the top 20, then a deep page: coverage stays 20, not exhausted.
+	if err := cache.Record(ctx, key, Window{Limit: 20}, 20); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if err := cache.Record(ctx, key, Window{Limit: 20, Offset: 100}, 5); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if coverage, exhausted, err := cache.state(ctx, key); err != nil || coverage != 20 || exhausted {
+		t.Errorf("state after top+deep = (coverage=%d, exhausted=%v, err=%v), want (20, false, nil)", coverage, exhausted, err)
+	}
+}
+
+// TestService_FetchMessages_OffsetDoesNotTruncateLaterWindow is the
+// REST-path regression test for the truncation bug above: a deep
+// ?offset= page must not make a later, larger offset=0 request serve a
+// truncated cache.
+func TestService_FetchMessages_OffsetDoesNotTruncateLaterWindow(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	all := make([]mailer.Message, 200)
+	for i := range all {
+		all[i] = mailer.Message{UID: fmt.Sprintf("u%d", i), Folder: "INBOX"}
+	}
+	calls := 0
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{
+			fetchCalls: &calls,
+			fetchFn: func(limit, offset int) []mailer.Message {
+				if offset >= len(all) {
+					return nil
+				}
+				end := offset + limit
+				if end > len(all) {
+					end = len(all)
+				}
+				return all[offset:end]
+			},
+		}
+	})
+
+	// A deep page (offset 100) must not be recorded as coverage of the top.
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 100, false); err != nil {
+		t.Fatalf("FetchMessages(offset=100) error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("fetchCalls after offset=100 = %d, want 1", calls)
+	}
+
+	// The top window is not covered, so it must dial and return all 120.
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 120, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(limit=120) error = %v", err)
+	}
+	if len(msgs) != 120 {
+		t.Errorf("FetchMessages(limit=120) len = %d, want 120 (must not be truncated by the deep page)", len(msgs))
+	}
+	if calls != 2 {
+		t.Errorf("fetchCalls after limit=120 = %d, want 2 (cache didn't cover the top)", calls)
+	}
+}
+
+// TestMessageCache_ListOrdersAcrossBatches locks in position-based
+// display order: pages fetched at different times (and inserted here out
+// of order) must come back in mailbox order, not batch-recency order.
+func TestMessageCache_ListOrdersAcrossBatches(t *testing.T) {
+	ctx := context.Background()
+	repo, cache := newTestCache(t)
+	created, err := repo.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	key := CacheKey{AccountID: created.ID, Protocol: ProtocolIMAP, Folder: "INBOX"}
+
+	page := func(first, n int) []mailer.Message {
+		out := make([]mailer.Message, n)
+		for i := range out {
+			out[i] = mailer.Message{UID: fmt.Sprintf("u%d", first+i), Folder: "INBOX"}
+		}
+		return out
+	}
+	// Insert the second page first, on purpose.
+	if err := cache.Upsert(ctx, key, page(20, 20), 20); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	if err := cache.Upsert(ctx, key, page(0, 20), 0); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	got, err := cache.list(ctx, key, Window{Limit: 40})
+	if err != nil {
+		t.Fatalf("list() error = %v", err)
+	}
+	if len(got) != 40 {
+		t.Fatalf("list() len = %d, want 40", len(got))
+	}
+	for i := range got {
+		if want := fmt.Sprintf("u%d", i); got[i].UID != want {
+			t.Errorf("list()[%d].UID = %q, want %q (position order, not batch order)", i, got[i].UID, want)
+			break
+		}
+	}
+}
+
+// TestService_FetchMessages_AdjacentPagesServeInMailboxOrder is the
+// regression test for a served window coming back in the wrong order:
+// two adjacent pages fetched at different times used to return batched
+// (e.g. [u20..u39, u0..u19]), and could even drop rows.
+func TestService_FetchMessages_AdjacentPagesServeInMailboxOrder(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	all := make([]mailer.Message, 40)
+	for i := range all {
+		all[i] = mailer.Message{UID: fmt.Sprintf("u%d", i), Folder: "INBOX"}
+	}
+	calls := 0
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{
+			fetchCalls: &calls,
+			fetchFn: func(limit, offset int) []mailer.Message {
+				if offset >= len(all) {
+					return nil
+				}
+				end := offset + limit
+				if end > len(all) {
+					end = len(all)
+				}
+				return all[offset:end]
+			},
+		}
+	})
+
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false); err != nil {
+		t.Fatalf("FetchMessages(20,0) error = %v", err)
+	}
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 20, false); err != nil {
+		t.Fatalf("FetchMessages(20,20) error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("fetchCalls = %d, want 2 (two live pages)", calls)
+	}
+
+	// The 40-message window is now covered, so it is served from cache —
+	// and must be in mailbox order.
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 40, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(40,0) error = %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("fetchCalls = %d, want still 2 (window covered by the two pages)", calls)
+	}
+	if len(msgs) != 40 {
+		t.Fatalf("FetchMessages(40,0) len = %d, want 40", len(msgs))
+	}
+	for i := range msgs {
+		if want := fmt.Sprintf("u%d", i); msgs[i].UID != want {
+			t.Errorf("msgs[%d].UID = %q, want %q (served window must be in mailbox order)", i, msgs[i].UID, want)
+			break
+		}
+	}
+}
+
+// TestService_FetchMessages_ExhaustedCacheRecoversWhenMailboxGrows locks
+// in that the Exhausted latch is not permanent: once the mailbox has
+// grown, a full page (CheckNew always dials) clears it, so later windows
+// dial again instead of being served truncated forever.
+func TestService_FetchMessages_ExhaustedCacheRecoversWhenMailboxGrows(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	size := 10
+	calls := 0
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{
+			fetchCalls: &calls,
+			fetchFn: func(limit, offset int) []mailer.Message {
+				if offset >= size {
+					return nil
+				}
+				end := offset + limit
+				if end > size {
+					end = size
+				}
+				out := make([]mailer.Message, 0, end-offset)
+				for i := offset; i < end; i++ {
+					out = append(out, mailer.Message{UID: fmt.Sprintf("u%d", i), Folder: "INBOX"})
+				}
+				return out
+			},
+		}
+	})
+
+	// A 10-message mailbox: limit=20 returns a short page, latching Exhausted.
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(20,0) error = %v", err)
+	}
+	if len(msgs) != 10 {
+		t.Fatalf("FetchMessages(20,0) len = %d, want 10", len(msgs))
+	}
+
+	// The mailbox grows to 100 messages.
+	size = 100
+
+	// CheckNew always dials; its full 50-message page clears the stale latch.
+	if _, _, err := svc.CheckNew(ctx, created.ID, "imap", "INBOX"); err != nil {
+		t.Fatalf("CheckNew() error = %v", err)
+	}
+
+	// A window past the now-known 50 must dial and return live data, not
+	// the truncated 10-row cache.
+	msgs, err = svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 80, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages(80,0) error = %v", err)
+	}
+	if len(msgs) != 80 {
+		t.Errorf("FetchMessages(80,0) len = %d, want 80 (stale Exhausted must not serve the 10-row cache)", len(msgs))
 	}
 }

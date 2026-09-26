@@ -99,22 +99,19 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 // directly, so callers (internal/api, internal/mcpserver) stay
 // protocol-agnostic.
 func wireMailer(svc *account.Service) {
-	svc.SetSMTPTester(func(cfg account.ConnectionConfig, username, secret string) account.ConnTester {
-		return smtp.New(cfg, "", username, secret)
+	svc.RegisterProtocol(account.ProtocolSMTP, account.Protocol{
+		Sender: func(cfg account.ConnectionConfig, fromAddress, username, secret string) mailer.Sender {
+			return smtp.New(cfg, fromAddress, username, secret)
+		},
 	})
-	svc.SetSMTPSender(func(cfg account.ConnectionConfig, fromAddress, username, secret string) mailer.Sender {
-		return smtp.New(cfg, fromAddress, username, secret)
+	svc.RegisterProtocol(account.ProtocolIMAP, account.Protocol{
+		Fetcher: func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {
+			return imap.New(cfg, username, secret)
+		},
 	})
-	svc.SetIMAPFactory(func(cfg account.ConnectionConfig, username, secret string) mailer.FetcherChecker {
-		return imap.New(cfg, username, secret)
-	})
-	svc.SetIMAPTester(func(cfg account.ConnectionConfig, username, secret string) account.ConnTester {
-		return imap.New(cfg, username, secret)
-	})
-	svc.SetPOP3Factory(func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {
-		return pop3.New(cfg, username, secret)
-	})
-	svc.SetPOP3Tester(func(cfg account.ConnectionConfig, username, secret string) account.ConnTester {
-		return pop3.New(cfg, username, secret)
+	svc.RegisterProtocol(account.ProtocolPOP3, account.Protocol{
+		Fetcher: func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {
+			return pop3.New(cfg, username, secret)
+		},
 	})
 }

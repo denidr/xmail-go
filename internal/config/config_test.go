@@ -15,7 +15,7 @@ import (
 // instead (see TestLoad_ReadsDotEnv).
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{envListenAddr, envDBPath, envEncryptionKey, envAPIKey, envMCPStdio} {
+	for _, k := range []string{EnvListenAddr, EnvDBPath, EnvEncryptionKey, EnvAPIKey, EnvMCPStdio} {
 		t.Setenv(k, "")
 	}
 }
@@ -39,8 +39,8 @@ func unsetEnv(t *testing.T, key string) {
 
 func TestLoad_Defaults(t *testing.T) {
 	clearEnv(t)
-	t.Setenv(envAPIKey, "test-key")
-	t.Setenv(envEncryptionKey, "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=") // 32 bytes base64
+	t.Setenv(EnvAPIKey, "test-key")
+	t.Setenv(EnvEncryptionKey, "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=") // 32 bytes base64
 
 	cfg, err := Load()
 	if err != nil {
@@ -59,7 +59,7 @@ func TestLoad_Defaults(t *testing.T) {
 
 func TestLoad_MissingAPIKey(t *testing.T) {
 	clearEnv(t)
-	t.Setenv(envEncryptionKey, "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
+	t.Setenv(EnvEncryptionKey, "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() error = nil, want error for missing API key")
@@ -68,7 +68,7 @@ func TestLoad_MissingAPIKey(t *testing.T) {
 
 func TestLoad_MissingEncryptionKey(t *testing.T) {
 	clearEnv(t)
-	t.Setenv(envAPIKey, "test-key")
+	t.Setenv(EnvAPIKey, "test-key")
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() error = nil, want error for missing encryption key")
@@ -77,8 +77,8 @@ func TestLoad_MissingEncryptionKey(t *testing.T) {
 
 func TestLoad_InvalidEncryptionKeyLength(t *testing.T) {
 	clearEnv(t)
-	t.Setenv(envAPIKey, "test-key")
-	t.Setenv(envEncryptionKey, "dG9vc2hvcnQ=") // "tooshort", not 32 bytes
+	t.Setenv(EnvAPIKey, "test-key")
+	t.Setenv(EnvEncryptionKey, "dG9vc2hvcnQ=") // "tooshort", not 32 bytes
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() error = nil, want error for wrong-length key")
@@ -87,8 +87,8 @@ func TestLoad_InvalidEncryptionKeyLength(t *testing.T) {
 
 func TestLoad_InvalidEncryptionKeyBase64(t *testing.T) {
 	clearEnv(t)
-	t.Setenv(envAPIKey, "test-key")
-	t.Setenv(envEncryptionKey, "not-valid-base64!!!")
+	t.Setenv(EnvAPIKey, "test-key")
+	t.Setenv(EnvEncryptionKey, "not-valid-base64!!!")
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() error = nil, want error for invalid base64")
@@ -104,7 +104,7 @@ func TestLoad_InvalidEncryptionKeyBase64(t *testing.T) {
 // reads ".env" relative to the process cwd) and confirms Load() picks
 // it up.
 func TestLoad_ReadsDotEnv(t *testing.T) {
-	for _, k := range []string{envListenAddr, envDBPath, envEncryptionKey, envAPIKey, envMCPStdio} {
+	for _, k := range []string{EnvListenAddr, EnvDBPath, EnvEncryptionKey, EnvAPIKey, EnvMCPStdio} {
 		unsetEnv(t, k)
 	}
 
@@ -140,7 +140,7 @@ func TestLoad_ReadsDotEnv(t *testing.T) {
 // fallback for local dev convenience, never an override of an
 // explicitly configured environment such as Docker's -e/--env-file).
 func TestLoad_RealEnvOverridesDotEnv(t *testing.T) {
-	for _, k := range []string{envListenAddr, envDBPath, envEncryptionKey, envAPIKey, envMCPStdio} {
+	for _, k := range []string{EnvListenAddr, EnvDBPath, EnvEncryptionKey, EnvAPIKey, EnvMCPStdio} {
 		unsetEnv(t, k)
 	}
 
@@ -159,7 +159,7 @@ func TestLoad_RealEnvOverridesDotEnv(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chdir(origWD) })
 
-	t.Setenv(envAPIKey, "from-real-env")
+	t.Setenv(EnvAPIKey, "from-real-env")
 
 	cfg, err := Load()
 	if err != nil {
@@ -167,5 +167,52 @@ func TestLoad_RealEnvOverridesDotEnv(t *testing.T) {
 	}
 	if cfg.APIKey != "from-real-env" {
 		t.Errorf("APIKey = %q, want %q (real env must win over .env)", cfg.APIKey, "from-real-env")
+	}
+}
+
+// TestEnviron_RoundTripsThroughLoad locks in that Environ is the
+// inverse of Load: a Config serialized to its environment form and read
+// back through Load reproduces the same Config. This is what lets
+// internal/winservice reconstruct a service process's environment from
+// a loaded Config instead of re-listing every XMAIL_* name itself (the
+// duplication that shipped two bugs — see PLAN.md §10.6/§10.7).
+func TestEnviron_RoundTripsThroughLoad(t *testing.T) {
+	clearEnv(t)
+	t.Setenv(EnvAPIKey, "test-key")
+	t.Setenv(EnvEncryptionKey, "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
+	t.Setenv(EnvListenAddr, ":9999")
+	t.Setenv(EnvDBPath, "custom.db")
+	t.Setenv(EnvMCPStdio, "true")
+
+	original, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	// Simulate a fresh process whose entire environment is Environ's
+	// output (nothing inherited).
+	clearEnv(t)
+	for k, v := range original.Environ() {
+		t.Setenv(k, v)
+	}
+
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() after round-trip error = %v", err)
+	}
+	if reloaded.APIKey != original.APIKey {
+		t.Errorf("APIKey = %q, want %q", reloaded.APIKey, original.APIKey)
+	}
+	if string(reloaded.EncryptionKey) != string(original.EncryptionKey) {
+		t.Error("EncryptionKey mismatch after Environ round-trip")
+	}
+	if reloaded.ListenAddr != original.ListenAddr {
+		t.Errorf("ListenAddr = %q, want %q", reloaded.ListenAddr, original.ListenAddr)
+	}
+	if reloaded.DBPath != original.DBPath {
+		t.Errorf("DBPath = %q, want %q", reloaded.DBPath, original.DBPath)
+	}
+	if reloaded.MCPStdioEnable != original.MCPStdioEnable {
+		t.Errorf("MCPStdioEnable = %v, want %v", reloaded.MCPStdioEnable, original.MCPStdioEnable)
 	}
 }

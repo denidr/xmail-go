@@ -1,0 +1,50 @@
+# xmail
+
+xmail is an email-as-a-service backend: it keeps several email accounts, sends mail on their behalf, and reads their mailboxes over standard protocols, exposing the same operations over a REST API and an MCP server.
+
+## Language
+
+**Account**:
+One configured mailbox xmail can act on — a name, an email address, a username, and the connection settings for the protocols it supports. An Account never carries its Credential.
+_Avoid_: user, profile, mailbox
+
+**Mailer protocol**:
+One of the wire protocols xmail speaks for an account: SMTP (send), IMAP (fetch, check, mark-read), or POP3 (fetch only). An account configures any subset of them.
+
+**Connection**:
+The host, port, and TLS mode for one Mailer protocol on an account.
+_Avoid_: endpoint, server config
+
+**Credential**:
+The password or app-password for an account. Stored encrypted; never returned to a caller.
+_Avoid_: secret, token
+
+**Message**:
+The metadata of one email in a mailbox — its UID, subject, sender, recipient, date, read state, and attachment filenames. Never the body.
+_Avoid_: email, mail item
+
+**Folder**:
+A named mailbox on the server. IMAP has many; POP3 has none, so its only Folder is INBOX.
+_Avoid_: directory, label
+
+**Fetch window**:
+A slice of a mailbox's messages, newest-first: the most recent N, skipping the first M.
+_Avoid_: page, offset/limit
+
+**Message cache**:
+xmail's local store of Message metadata, keyed by (account, protocol, folder), so a repeated fetch need not re-dial the mail server.
+_Avoid_: store, index, spool
+
+**Coverage**:
+How many of a mailbox's newest messages the Message cache is known to hold contiguously from the top.
+_Avoid_: cache size, depth
+
+**Exhausted**:
+Once a fetch returns a short page, the whole mailbox is known to be cached, and any Fetch window can be answered from the Message cache.
+
+**Check**:
+A poll of an account's mailbox that reports the server's unread count plus how many of the most recent Messages are not yet in the Message cache.
+_Avoid_: poll, refresh
+
+**Check result**:
+The outcome of a Check: how many messages are unread, and how many of the most recent are not yet in the Message cache.
