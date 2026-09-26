@@ -1084,3 +1084,115 @@ func TestService_FetchMessages_MidMailboxDeletionDoesNotLeaveDuplicateRanks(t *t
 		}
 	}
 }
+
+// TestService_FetchMessages_EmptyMailboxDoesNotServeStaleRows: an empty
+// mailbox must not keep serving what it used to hold — a top fetch that
+// returns nothing proves the cached rows are gone.
+func TestService_FetchMessages_EmptyMailboxDoesNotServeStaleRows(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	mailbox := make([]string, 20)
+	for i := range mailbox {
+		mailbox[i] = fmt.Sprintf("c%d", i)
+	}
+	fetch := func(limit, offset int) []mailer.Message {
+		if offset >= len(mailbox) {
+			return nil
+		}
+		end := offset + limit
+		if end > len(mailbox) {
+			end = len(mailbox)
+		}
+		out := make([]mailer.Message, 0, end-offset)
+		for i := offset; i < end; i++ {
+			out = append(out, mailer.Message{UID: mailbox[i], Folder: "INBOX"})
+		}
+		return out
+	}
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{fetchFn: fetch}
+	})
+
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false); err != nil {
+		t.Fatalf("FetchMessages(20,0) error = %v", err)
+	}
+
+	// The mailbox is emptied.
+	mailbox = nil
+
+	// CheckNew always dials; it sees an empty mailbox.
+	if _, _, err := svc.CheckNew(ctx, created.ID, "imap", "INBOX"); err != nil {
+		t.Fatalf("CheckNew() error = %v", err)
+	}
+
+	msgs, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false)
+	if err != nil {
+		t.Fatalf("FetchMessages() error = %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("len = %d, want 0 (an emptied mailbox must not serve cached rows); first = %q", len(msgs), msgs[0].UID)
+	}
+}
+
+// TestService_FetchMessages_DeepPagePastPrefixIsNotServedAsOrphans pins the
+// second half of the coherence fix: a page that starts past the cached
+// prefix is not stored, because nothing could extend the prefix to reach it
+// and it would leak into a served window once exhausted latches.
+func TestService_FetchMessages_DeepPagePastPrefixIsNotServedAsOrphans(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	mailbox := make([]string, 200) // mailbox[0] is the newest
+	for i := range mailbox {
+		mailbox[i] = fmt.Sprintf("u%d", i)
+	}
+	fetch := func(limit, offset int) []mailer.Message {
+		if offset >= len(mailbox) {
+			return nil
+		}
+		end := offset + limit
+		if end > len(mailbox) {
+			end = len(mailbox)
+		}
+		out := make([]mailer.Message, 0, end-offset)
+		for i := offset; i < end; i++ {
+			out = append(out, mailer.Message{UID: mailbox[i], Folder: "INBOX"})
+		}
+		return out
+	}
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{fetchFn: fetch}
+	})
+
+	// Cache the newest 20, then fetch a deep page far past them.
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 0, false); err != nil {
+		t.Fatalf("FetchMessages(20,0) error = %v", err)
+	}
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 20, 100, false); err != nil {
+		t.Fatalf("FetchMessages(20,100) error = %v", err)
+	}
+
+	key := CacheKey{AccountID: created.ID, Protocol: ProtocolIMAP, Folder: "INBOX"}
+	rows, err := svc.cache.list(ctx, key, Window{Limit: 200})
+	if err != nil {
+		t.Fatalf("list() error = %v", err)
+	}
+	if len(rows) != 20 {
+		t.Fatalf("cache holds %d rows, want 20 (a deep page past the prefix must not be stored as orphans)", len(rows))
+	}
+	for i, want := range mailbox[:20] {
+		if rows[i].UID != want {
+			t.Errorf("cache row %d = %q, want %q", i, rows[i].UID, want)
+			break
+		}
+	}
+}

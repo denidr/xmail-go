@@ -93,16 +93,27 @@ func (c *MessageCache) Get(ctx context.Context, key CacheKey, w Window) ([]maile
 // mail arrived, or mail was deleted), which shifts every cached row's
 // position. The cached window and its Coverage/Exhausted are then
 // discarded rather than left to mix stale positions into a served window
-// (see TestService_FetchMessages_NewMailAtTopDoesNotServeStaleRows).
+// (see TestService_FetchMessages_NewMailAtTopDoesNotServeStaleRows). The
+// same goes for a top fetch that comes back empty: it proves the mailbox
+// has no messages at all, so anything cached for it is stale (see
+// TestService_FetchMessages_EmptyMailboxDoesNotServeStaleRows).
 func (c *MessageCache) Upsert(ctx context.Context, key CacheKey, msgs []mailer.Message, offset int) error {
-	if len(msgs) == 0 {
-		return nil
-	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("account: begin tx: %w", err)
 	}
 	defer tx.Rollback()
+
+	if len(msgs) == 0 {
+		// An empty page carries no ranks for the coherence check below to
+		// compare against, so the empty-top case is handled here.
+		if offset == 0 {
+			if err := invalidateCache(ctx, tx, key); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	}
 
 	// Coherence check: in a valid cache every row's sort_rank equals that
 	// message's mailbox position. This page records positions
@@ -156,13 +167,8 @@ func (c *MessageCache) Upsert(ctx context.Context, key CacheKey, msgs []mailer.M
 		prefix++
 	}
 	if stale {
-		for _, q := range []string{
-			`DELETE FROM messages_cache WHERE account_id = ? AND protocol = ? AND folder = ?`,
-			`DELETE FROM messages_cache_state WHERE account_id = ? AND protocol = ? AND folder = ?`,
-		} {
-			if _, err := tx.ExecContext(ctx, q, key.AccountID, key.Protocol, key.Folder); err != nil {
-				return fmt.Errorf("account: invalidate stale cache: %w", err)
-			}
+		if err := invalidateCache(ctx, tx, key); err != nil {
+			return err
 		}
 		prefix = 0
 	}
@@ -204,6 +210,21 @@ func (c *MessageCache) Upsert(ctx context.Context, key CacheKey, msgs []mailer.M
 		}
 	}
 	return tx.Commit()
+}
+
+// invalidateCache deletes key's cached rows and its Coverage/Exhausted
+// state, inside tx — used when a fetch proves the cache is stale (or the
+// mailbox is empty).
+func invalidateCache(ctx context.Context, tx *sql.Tx, key CacheKey) error {
+	for _, q := range []string{
+		`DELETE FROM messages_cache WHERE account_id = ? AND protocol = ? AND folder = ?`,
+		`DELETE FROM messages_cache_state WHERE account_id = ? AND protocol = ? AND folder = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, q, key.AccountID, key.Protocol, key.Folder); err != nil {
+			return fmt.Errorf("account: invalidate cache: %w", err)
+		}
+	}
+	return nil
 }
 
 // Record updates key's Coverage/Exhausted after a live fetch that
