@@ -2,7 +2,7 @@
 
 ## 1. Ringkasan
 
-xmail adalah service backend yang membungkus operasi email (kirim, terima, cek) di balik REST API, mendukung banyak akun email sekaligus, dan bisa diakses juga lewat MCP (Model Context Protocol) sehingga AI agent (Claude Desktop, Claude Code, dll) bisa kirim/baca email langsung sebagai tools.
+xmail adalah service backend yang membungkus operasi email (kirim, terima, cek) di balik REST API, mendukung banyak akun email sekaligus, dan bisa diakses juga lewat MCP (Model Context Protocol) sehingga AI agent (Claude Desktop, Claude Code, dll) bisa kirim/baca email langsung sebagai tools. Binary yang sama juga menyajikan dashboard web ringan **khusus manajemen akun** (CRUD + uji konektivitas — lihat §6.7).
 
 Target deployment: single binary ringan, jalan di Linux, dibungkus Docker.
 
@@ -21,6 +21,7 @@ Saat ini kirim/terima email biasanya butuh integrasi langsung ke SMTP/IMAP/POP3 
 - Mendukung multi-akun email dalam satu instance service.
 - Simpan konfigurasi akun & kredensial sebagai parameter konfigurasi di SQLite.
 - Expose fungsi service sebagai MCP Server (tools untuk AI agent), dan juga mampu berperan sebagai MCP Client (konsumsi MCP server lain bila diperlukan).
+- Menyediakan dashboard web ringan untuk manajemen akun (CRUD + uji konektivitas), disajikan dari binary yang sama (lihat §6.7).
 - Footprint memory kecil, mudah dijalankan di Linux / Docker.
 - Tersedia dalam 3 varian rilis dengan behavior yang identik (lihat §6.6): Docker x64, Docker Armbian (arm64), dan Windows x64 (system tray + bisa diinstall sebagai Windows Service).
 
@@ -28,7 +29,7 @@ Saat ini kirim/terima email biasanya butuh integrasi langsung ke SMTP/IMAP/POP3 
 
 - Multi-tenant / multi-user dengan sistem login (JWT, RBAC) — MVP pakai API key tunggal.
 - OAuth2 login flow ke provider (Gmail/Outlook modern auth) — MVP fokus ke SMTP/IMAP/POP3 dengan username+password/app-password.
-- UI dashboard (web frontend).
+- UI dashboard untuk kirim/baca email (compose/reader). **Revisi**: dashboard web **hanya untuk manajemen akun** (CRUD akun + uji konektivitas) sekarang **masuk scope** — lihat §6.7. Yang tetap non-goal adalah UI untuk mengirim/membaca email.
 - Antrian/queue kirim email skala besar (bulk sending, retry policy kompleks) — cukup best-effort synchronous send di MVP.
 - High-availability / horizontal scaling (SQLite = single-node).
 
@@ -98,10 +99,25 @@ Satu codebase, tiga artefak rilis, behavior harus identik (logika inti sama, cum
 
 Build ketiga target dilakukan lewat **dua script setara** — `scripts/release.sh` (Git Bash/WSL/Linux/macOS/CI) dan `scripts/release.ps1` (PowerShell native, untuk Windows tanpa Git Bash/WSL) — sama-sama menerima target `docker-amd64`/`docker-arm64`/`windows-amd64`/`all`, sama-sama menghasilkan artefak siap distribusi di `dist/` beserta checksum SHA-256. Detail teknis build & packaging ada di [PLAN.md](./PLAN.md) bagian "Release Build", dan referensi kode/cara extend ada di [ARCHITECTURE.md](./ARCHITECTURE.md).
 
+### 6.7 Dashboard Web (Manajemen Akun)
+
+Dashboard web ringan yang disajikan **dari binary yang sama** dengan REST API & MCP — bukan service/artefak rilis terpisah.
+
+- **Scope**: manajemen akun saja — list, detail, create, update (full replace), delete akun, dan **uji konektivitas per protokol** (`smtp`/`imap`/`pop3`) langsung dari UI.
+- **Bukan scope dashboard**: kirim email, fetch/check pesan, mark-read — jalur email tetap REST/MCP saja.
+- **Penyajian**: aset statis (HTML/CSS/JS vanilla) di-`go:embed` ke binary dan di-serve di root path (`GET /`). Tidak ada langkah build frontend, tidak ada dependency Node/npm/framework baru — sejalan dengan prinsip "single static binary, minim dependency".
+- **Auth**: memakai API key yang sudah ada (`XMAIL_API_KEY`), dimasukkan lewat halaman login dan disimpan di `sessionStorage` browser, lalu dikirim sebagai header `X-API-Key` pada setiap panggilan API. Tidak ada mekanisme auth/sesi baru di server.
+- **Aset statis tanpa auth** — tidak ada rahasia di dalam aset; endpoint API (`/accounts`, `/mcp`) tetap wajib `X-API-Key` seperti biasa. Karena disajikan same-origin dengan API, tidak perlu CORS.
+- **Tanpa logika bisnis baru**: setiap aksi dashboard memanggil endpoint REST yang sudah ada (`internal/api` → `account.Service`), jadi tidak ada duplikasi perilaku.
+- **Ketegangan desain yang diwarisi** (§6.1): alur realistis tetap `POST /accounts` (simpan dulu) → `test-connection` (validasi) → `PUT`/`DELETE` kalau gagal; dashboard mengikuti alur ini, bukan "validasi sebelum simpan".
+
+Rencana implementasi detail (desain integrasi server, spesifikasi UI, fase kerja, testing, keamanan) ada di **[PLAN-DASHBOARD.md](./PLAN-DASHBOARD.md)**.
+
 ## 7. API Design (Sketsa)
 
 ```
 GET    /healthz                       # health check, tanpa auth — buat container orchestrator (Docker/k8s) probe liveness
+GET    /                              # dashboard web manajemen akun (aset statis HTML/CSS/JS, tanpa auth) — §6.7
 POST   /accounts                      # tambah akun email baru
 GET    /accounts                      # list akun (tanpa credential)
 GET    /accounts/{id}                 # detail akun
@@ -115,13 +131,14 @@ POST   /accounts/{id}/check           # trigger cek email baru, return unread co
 POST   /accounts/{id}/messages/read   # tandai 1 pesan sudah dibaca (IMAP only)
 ```
 
-Semua request butuh header `X-API-Key`. Response format JSON konsisten dengan `{data, error}` envelope.
+Semua request API butuh header `X-API-Key` (pengecualian: `GET /healthz` dan aset statis dashboard `GET /` — lihat §6.7). Response format JSON konsisten dengan `{data, error}` envelope.
 
 ## 8. Security Considerations
 
 - Credential (password/app-password) dienkripsi at-rest di SQLite (mis. AES-GCM dengan key dari environment variable, bukan hardcoded).
 - **API key (MVP)**: satu key statis dari env var `XMAIL_API_KEY`, dibandingkan pakai constant-time compare (`crypto/subtle`) supaya tidak bocor lewat timing attack — **bukan** disimpan/di-hash di database, karena tidak pernah disimpan sama sekali (langsung dari env tiap request). Tabel `api_keys` ada di skema DB sebagai persiapan untuk **multi-key/rotatable API key** (key per-hash, bisa banyak, bisa di-revoke tanpa restart) — fitur ini masih backlog (lihat PLAN.md Fase 9), tabelnya belum dipakai. *(Revisi dari draf awal yang bilang "API key disimpan sebagai hash di tabel `api_keys`" — itu deskripsi rencana fitur multi-key yang belum diimplementasikan, ditulis seolah-olah sudah jadi behavior MVP. Ditemukan sebagai kontradiksi PRD↔kode saat code review, diperbaiki di sini alih-alih memaksakan implementasi hashing untuk 1 key statis yang justru tidak butuh di-hash karena tidak pernah disimpan.)*
 - TLS certificate validation aktif secara default untuk koneksi TLS; opsi "non-TLS/insecure" harus eksplisit di-set per akun (bukan default), supaya tidak tidak sengaja kirim credential plaintext ke server yang salah.
+- **Dashboard web (§6.7)**: memakai API key yang sama, dimasukkan lewat halaman login dan disimpan di `sessionStorage` browser (hilang saat tab ditutup), lalu dikirim via header `X-API-Key`. Aset statis di-serve tanpa auth (tidak ada rahasia di dalamnya) dan responsnya diberi CSP `default-src 'self'` sebagai mitigasi XSS; kredensial tidak pernah di-prefill atau ditampilkan; dashboard tidak menambah hak akses di luar klien REST biasa.
 - Tidak mencatat isi email atau credential ke log level info/debug.
 
 ## 9. Non-Functional Requirements
@@ -133,7 +150,7 @@ Semua request butuh header `X-API-Key`. Response format JSON konsisten dengan `{
 
 ## 10. Out of Scope / Kemungkinan Fase Berikutnya
 
-- OAuth2 (Gmail/Outlook modern auth), push notification (IMAP IDLE / webhook), UI dashboard, multi-user auth (JWT/RBAC), migrasi storage ke Postgres kalau butuh scale multi-node, rate limiting/quota per akun, audit log terperinci.
+- OAuth2 (Gmail/Outlook modern auth), push notification (IMAP IDLE / webhook), UI dashboard untuk kirim/baca email (dashboard manajemen akun sudah masuk scope — §6.7), multi-user auth (JWT/RBAC), migrasi storage ke Postgres kalau butuh scale multi-node, rate limiting/quota per akun, audit log terperinci.
 
 ## 11. Rough Roadmap
 
@@ -141,7 +158,8 @@ Semua request butuh header `X-API-Key`. Response format JSON konsisten dengan `{
 2. **Fase 2 — Fetch**: fetch/check email via IMAP (primary) + POP3 (basic), cache metadata di SQLite.
 3. **Fase 3 — MCP**: expose MCP server dengan 4 tools inti (list_accounts, send_email, fetch_emails, check_new_emails).
 4. **Fase 4 — Packaging & Hardening**: Dockerfile multi-stage, dokumentasi API, test-connection endpoint, review security (enkripsi, TLS default).
-5. **Fase 5 (opsional)** — MCP client capability, fitur tambahan sesuai kebutuhan nyata.
+5. **Fase 5 — Dashboard Web (manajemen akun)**: UI CRUD akun + uji konektivitas per protokol, disajikan dari binary yang sama (aset statis di-`go:embed`, auth pakai API key yang sudah ada) — lihat §6.7 dan [PLAN-DASHBOARD.md](./PLAN-DASHBOARD.md).
+6. **Fase 6 (opsional)** — MCP client capability, fitur tambahan sesuai kebutuhan nyata.
 
 ## 12. Open Questions
 

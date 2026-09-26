@@ -18,6 +18,13 @@ const testAPIKey = "test-api-key"
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
+	return newTestServerWith(t, nil)
+}
+
+// newTestServerWith is newTestServer plus an optional dashboard handler,
+// matching how internal/app wires NewServer (see dashboard_test.go).
+func newTestServerWith(t *testing.T, dashboardHandler http.Handler) *Server {
+	t.Helper()
 	db, err := storage.Open(filepath.Join(t.TempDir(), "xmail.db"))
 	if err != nil {
 		t.Fatalf("storage.Open() error = %v", err)
@@ -25,7 +32,7 @@ func newTestServer(t *testing.T) *Server {
 	t.Cleanup(func() { db.Close() })
 	repo := account.NewRepository(db, bytes.Repeat([]byte{0x33}, 32))
 	svc := account.NewService(repo)
-	return NewServer(testAPIKey, svc, nil)
+	return NewServer(testAPIKey, svc, nil, dashboardHandler)
 }
 
 func doRequest(t *testing.T, h http.Handler, method, path, apiKey string, body any) *httptest.ResponseRecorder {

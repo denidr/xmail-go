@@ -20,6 +20,7 @@ import (
 	"xmail/internal/account"
 	"xmail/internal/api"
 	"xmail/internal/config"
+	"xmail/internal/dashboard"
 	"xmail/internal/mailer"
 	"xmail/internal/mailer/imap"
 	"xmail/internal/mailer/pop3"
@@ -51,7 +52,7 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	wireMailer(svc)
 
 	mcpSrv := mcpserver.New(svc, version)
-	srv := api.NewServer(cfg.APIKey, svc, mcpSrv.HTTPHandler())
+	srv := api.NewServer(cfg.APIKey, svc, mcpSrv.HTTPHandler(), dashboard.Handler())
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: srv.Handler(),

@@ -8,7 +8,7 @@ If you're an agent about to modify this repo: read §1 (Core Design Principles) 
 
 ## 1. Core Design Principles
 
-These four rules explain almost every structural decision in the codebase. Understand them before changing anything.
+These five rules explain almost every structural decision in the codebase. Understand them before changing anything.
 
 1. **One behavior, three entrypoints.** `internal/app.Run(ctx, cfg) error` is the *only* place that wires storage → account service → mailer implementations → API server → MCP server and starts serving. `cmd/xmail/main.go` (headless/Docker) and `cmd/xmail-tray/main.go` (Windows tray+service) both just call `app.Run`. Never put business logic in a `cmd/` package — it won't be shared across release targets.
 
@@ -17,6 +17,8 @@ These four rules explain almost every structural decision in the codebase. Under
 3. **REST and MCP are two skins over the same `account.Service`.** There is exactly one business-logic implementation of "send an email" / "fetch messages" / "check for new mail": `account.Service.Send` / `.FetchMessages` / `.CheckNew`. `internal/api`'s HTTP handlers and `internal/mcpserver`'s tool handlers are both thin adapters that parse their respective input format, call the same `Service` method, and format the response. If REST and MCP ever return different data for the same account, that's a bug in one of the two thin adapters, never in `Service`.
 
 4. **Domain models never leak secrets or internal detail across a boundary.** `account.Account` (domain) never has a plaintext password field — credentials live only in the `credentials` SQL table, encrypted, accessed via `Repository.Secret`. `internal/api/dto.go` defines separate request/response JSON shapes so a stray struct-literal typo can't accidentally serialize a password into an HTTP response (this is enforced by a test, see `TestAccountsCRUD_EndToEnd` in `internal/api/server_test.go`). `internal/mcpserver`'s `accountSummary` type does the same for MCP.
+
+5. **The dashboard is a static client, not a third backend skin.** `internal/dashboard` ships HTML/CSS/JS embedded in the binary and calls the *same REST endpoints* over the same origin — it has no `account.Service` access, no business logic, and no privileged route. `internal/api` mounts it outside the API-key middleware because a page's own asset requests cannot carry a header and the assets hold no secrets (`isAPIPath` in `internal/api/server.go`); every endpoint behind it stays behind auth exactly as before. This is what keeps rule 1 true when a UI is added — see ADR 0002 and [PLAN-DASHBOARD.md](./PLAN-DASHBOARD.md).
 
 ---
 
@@ -29,6 +31,8 @@ cmd/
   xmail/main.go              headless entrypoint (Docker x64 + Docker Armbian/arm64) — loads config, calls app.Run, handles OS signal shutdown
   xmail-tray/main.go         Windows entrypoint (build tag: windows,xmailtray) — system tray UI or, if launched by Windows SCM, hands off to winservice
   xmail-tray/icon.ico        embedded tray icon (copy of assets/icon.ico; go:embed requires the file inside the package dir)
+  xmail-tray/startup.go      (same tag) mirrors logs to %LOCALAPPDATA%\xmail\xmail-tray.log and shows a MessageBox for a fatal startup error (XMAIL_NO_DIALOG=1 suppresses it) — the release build is windowsgui, so without this a bad config looks like nothing happening at all (see §8, PLAN.md §10.10)
+  xmail-tray/startup_test.go (same tag) log-trail, actionable-message and dialog-suppression tests
 
 internal/
   app/app.go                 Run(ctx, cfg) — THE single wiring point (see §1 rule 1). Also wireMailer(svc), which plugs smtp/imap/pop3 implementations into account.Service.
@@ -72,6 +76,11 @@ internal/
   api/send_handler.go         POST /accounts/{id}/send
   api/messages_handler.go     GET /accounts/{id}/messages (cache-first, ?refresh=true forces live), POST /accounts/{id}/check, POST /accounts/{id}/messages/read
   api/server_test.go          httptest-based contract tests (real Service + real sqlite temp file, not mocked)
+  api/dashboard_test.go       auth-boundary tests: dashboard assets are public, every /accounts + /mcp route still 401s without a key (§3.5)
+
+  dashboard/dashboard.go      Handler() — embeds assets/ and serves them via http.FileServerFS; sets CSP/nosniff/no-cache
+  dashboard/assets/           index.html + app.js + style.css — the account-management UI (vanilla, no build step, no npm)
+  dashboard/dashboard_test.go asset-integrity tests: index.html references only embedded files and uses no inline script/style/CSP-blocked constructs
 
   mcpserver/server.go         Server — wraps mark3labs/mcp-go, registers 4 tools, all calling the same account.Service methods as internal/api
   mcpserver/server_test.go
@@ -82,6 +91,8 @@ internal/
 
 scripts/release.sh            build script for all 3 release targets → dist/ + SHA256SUMS.txt (Git Bash/WSL/Linux/macOS/CI — see §6)
 scripts/release.ps1           same, native PowerShell (no Git Bash/WSL needed — for a bare Windows machine)
+scripts/test.sh               full dev verification (gofmt, tidy -diff, vet, build, unit+integration, tray cross-compile) — see §7
+scripts/test.ps1              same, native PowerShell
 assets/icon.ico                source tray icon (placeholder; copied into cmd/xmail-tray/icon.ico for go:embed)
 
 Dockerfile, .dockerignore      multi-stage build → gcr.io/distroless/static-debian12:nonroot
@@ -118,6 +129,14 @@ Marking a message read (`POST /accounts/{id}/messages/read`) goes through `Servi
 `internal/api/accounts_handler.go` ↔ `account.Service.{Create,Get,List,Update,Delete}` ↔ `account.Repository` (SQL). `Create` calls `Validate(a, true, secret)`; `Update` calls `Validate(a, secret != nil, secretValue)` — `requireSecret` decouples "was a new password supplied at all" from "what is it", so `Update` with a nil secret pointer doesn't need any placeholder value to pass validation (see PLAN.md §10.4 #13 for the bug this replaced). Required fields, at least one protocol configured, valid `TLSMode` per configured protocol (including the POP3-specific rule: `starttls` is rejected for POP3, since `mailer/pop3` can't do it — PLAN.md §10.1 #2). **`Update` is a full replace, not a JSON merge-patch**: omitted `smtp`/`imap`/`pop3` fields are written as SQL NULL, i.e. removed. `password` is the only field where `nil` means "leave unchanged" (see `accountRequest.Password *string` in `internal/api/dto.go`). `DELETE` returns `200 {"data":{"deleted":true}}`, not a bare `204` — every endpoint uses the same envelope, no exceptions.
 
 ---
+
+### 3.5 Dashboard asset request (`GET /`, `/app.js`, `/style.css`)
+
+1. `Server.Handler` (`internal/api/server.go`) composes two handlers: a request whose path passes `isAPIPath` (`/healthz`, `/accounts…`, `/mcp`) goes to the `apiKeyAuth`-wrapped mux; **every other path** goes to `dashboard.Handler()` with no auth. This is the only place that decides which side a path belongs to.
+2. `dashboard.Handler` (`internal/dashboard/dashboard.go`) sets `Content-Security-Policy: default-src 'self'`, `X-Content-Type-Options: nosniff` and `Cache-Control: no-cache`, then serves the embedded `assets/` via `http.FileServerFS` — `/` → `index.html`, plus `app.js` and `style.css`.
+3. In the browser, `app.js` renders views from `location.hash` and calls the *existing* REST endpoints with `fetch`, attaching `X-API-Key` from `sessionStorage`. Those calls re-enter step 1 as API paths and are authenticated normally — the dashboard has no privileged route. `POST /accounts/{id}/test-connection` powers the connectivity checks (§3.1-adjacent: same `account.Service.TestConnection`).
+
+The assets are unauthenticated *by design* — a page's own HTML/CSS/JS requests cannot carry a header, and they hold no secrets; the reasoning and the rejected alternatives are in `docs/adr/0002-dashboard-serving-and-auth.md`.
 
 ## 4. Data Model
 
@@ -176,6 +195,14 @@ The `api_keys` table exists in the schema but is unused — auth is currently on
 
 ---
 
+### 5.7 Add a dashboard page or asset
+
+1. Put the file in `internal/dashboard/assets/` (`go:embed` only reaches files inside the package directory) and reference it from `index.html`/`app.js`. New JS goes through `app.js` (it is already loaded as `type="module"`). The CSP is `default-src 'self'`, so no CDN, no inline `<script>`/`<style>`/`style=""`/`on*=` — `TestIndexHasNoInlineScriptOrStyle` in `internal/dashboard/dashboard_test.go` fails otherwise.
+2. Render data with `textContent`/DOM nodes, never `innerHTML` — the API key lives in `sessionStorage` (§1 rule 5, ADR 0002). Literal markup templates with no interpolation are fine.
+3. Adding a page needs **no** server change: hash routes (`#/accounts`, `#/accounts/new`, `#/accounts/{id}`) never reach the Go side. If the page needs a new API call, that is §5.1 (a REST endpoint) — the dashboard then just calls it.
+
+A genuinely new *kind* of unauthenticated route (i.e. something to serve outside `isAPIPath`) is different: update `isAPIPath`/`Handler` in `internal/api/server.go` and `internal/api/dashboard_test.go` together, since that predicate is the auth boundary.
+
 ## 6. Build & Release
 
 Three release targets share one codebase and one `internal/app.Run` (see §1 rule 1) — the only difference is the entrypoint and packaging:
@@ -218,8 +245,12 @@ Full strategy (unit/integration/contract/race pyramid, coverage philosophy) is i
 | A real protocol client against a real (fake) server | `integration_test.go`, `//go:build integration` tag | `internal/mailer/{smtp,imap,pop3}/integration_test.go` — three different fake-server strategies: `go-smtp` server library, hand-rolled `imapserver.Session`, and a hand-rolled raw-socket POP3 server, chosen per what was available/practical for each protocol |
 | A full HTTP request → response round trip | `internal/api/server_test.go`, no build tag — real `Server` + real temp-file SQLite, `httptest.NewRecorder` | `TestAccountsCRUD_EndToEnd` |
 | An MCP tool end-to-end through the real JSON-RPC transport | `internal/mcpserver/server_test.go`, no build tag — in-process MCP client (`mcp-go/client`) against `Server.HTTPHandler()` | `TestTransport_SendEmailBindsArguments` — added so a tool's argument binding can't silently regress. A live `curl` against `/mcp` is still worth doing when a tool's *schema* changes (see PLAN.md Fase 8 "crosscheck" notes for the exact sequence) |
+| The dashboard's auth boundary (assets public, `/accounts`+`/mcp` still 401) | `internal/api/dashboard_test.go`, no build tag | `TestDashboard_APIStillRequiresKey`, `TestDashboard_AssetsServedWithoutAPIKey` |
+| The dashboard's embedded assets (referenced files exist, no CSP-blocked inline markup) | `internal/dashboard/dashboard_test.go`, no build tag | `TestIndexReferencesExistingAssets`, `TestIndexHasNoInlineScriptOrStyle` |
 
-Commands: `go test ./...` (unit), `go test -tags integration ./...` (+ integration), `go test -race -tags integration ./...` (requires cgo/gcc — not available on every dev machine, see PLAN.md Fase 2/6 notes; run in CI). `go build -tags xmailtray ./...` and `go vet -tags xmailtray ./...` to cover the Windows-only files.
+`app.js` has **no automated test** — the repo deliberately has no JS test runner (stdlib Go only). It is covered by the manual checklist in PLAN-DASHBOARD.md §5 (open the dashboard against a running server on Docker and on the Windows tray build). If the JS grows past the account screens, revisit that gap rather than adding a runner speculatively.
+
+Commands: `bash scripts/test.sh` (or `scripts\test.ps1` on Windows without Git Bash, or `make test-all`) runs the whole dev gate — gofmt, `go mod tidy -diff`, vet, build, unit + integration tests, the tray cross-compile check, the Windows-only `internal/winservice` + `cmd/xmail-tray` tests (on a Windows host), and the dashboard JS syntax check; `--race` adds the race detector. Individually: `go test ./...` (unit), `go test -tags integration ./...` (+ integration), `go test -race -tags integration ./...` (requires cgo/gcc — not available on every dev machine, see PLAN.md Fase 2/6 notes; run in CI). `go build -tags xmailtray ./...` and `go vet -tags xmailtray ./...` to cover the Windows-only files — note these need `GOOS=windows` off Windows, which is why the script sets it.
 
 ---
 
@@ -229,6 +260,7 @@ Kept in sync with PLAN.md's per-phase "catatan implementasi" — check there for
 
 - **Docker x64 has been built and run for real** (`scripts/release.sh docker-amd64`, then `docker run` with a named volume, REST calls, and a `docker restart` to prove data persistence — all passed). This caught a real bug: the original `Dockerfile` left `/app/data` unwritable by the distroless image's nonroot user, so every container crashed on startup with a SQLite `unable to open database file` error — building the image alone never surfaced this, only actually running it did. Fixed by pre-creating `/app/data` with correct ownership in the build stage (see PLAN.md Fase 6 notes). **Docker Armbian/arm64 has also been built and run for real** under QEMU emulation (slow — several minutes — but it completed and passed the same REST smoke test), so both Docker targets are verified, not just Windows.
 - **Windows Service installation (`svc.Install()`) has never been executed** — intentionally, since it's a system-level change requiring Administrator. This is exactly how a real, serious bug slipped through once already: `New()` never set `service.Config.EnvVars`, so an installed service would launch via the SCM into a fresh, empty environment and immediately fail `config.Load()` — the tray's "Start"/"Stop" (foreground, non-service) path was tested and worked, which is a different code path and didn't exercise this at all. Fixed (PLAN.md §10.6 #19) and verified by simulating the exact failure mode in `winservice/service_test.go` (round-trip `buildServiceConfig`'s `EnvVars` back through `config.Load` in a cleared environment), but a real `Install()` → SCM `Start()` still hasn't been done end-to-end. If you touch `internal/winservice` again, don't trust the foreground tray path as evidence the service path also works — they diverge exactly where this bug was.
+- **A `windowsgui` release build has no console, so anything written to stderr is invisible.** That is how the shipped `.exe` looked like it did nothing at all on a first run: `config.Load()` failed (no env, no `.env`), `log.Fatalf` wrote to an unattached stderr, and the process exited before `systray.Run` — no tray icon, no Task Manager entry, nothing in `services.msc`. Fixed by mirroring logs to `%LOCALAPPDATA%\xmail\xmail-tray.log` and raising a MessageBox when a user can see it (PLAN.md §10.10), verified by running the real release artifact with a cleared environment. When touching `cmd/xmail-tray`, read "no output" as "nobody can see the output", not "nothing happened" — and remember `.env` is loaded from the **cwd**, which for a double-clicked exe is the folder holding the exe, not the repo root.
 - **`go test -race` has never been run** in any environment for this codebase (no cgo toolchain available). Run it before trusting concurrency-sensitive changes near `internal/app.Run`'s goroutines.
 - **TLS/STARTTLS integration test coverage for SMTP is plaintext-only** — the automated integration test only exercises `tls_mode: none`; `tls`/`starttls` modes are implemented and unit-tested for option-mapping, but not integration-tested against a real TLS handshake (would need a self-signed-cert test fixture, not yet built). Note this is orthogonal to SMTP *authentication*, which **is** integration-tested (`TestIntegration_Send_ActuallyAuthenticates`, CRAM-MD5 over the plaintext fixture) — that test exists specifically because a prior version of `smtp.Client` never actually sent an AUTH command at all despite `WithUsername`/`WithPassword` being set (go-mail defaults to `SMTPAuthNoAuth` unless `WithSMTPAuth(...)` is also called), a bug caught by manually probing a real Gmail account with a wrong password and getting a suspicious `ok:true` back. Fixed in `buildMailClient()`; see PLAN.md Fase 2/8 notes.
 - **No automated test asserts "REST and MCP return identical data for the same account"** — §1 rule 3 is true by construction (both call the same `Service` method) and spot-checked manually, but there's no regression test that would catch the two adapters silently diverging in field mapping. The shared `account.CheckResult` type now makes the `check` response shape identical by type, and `TestTransport_SendEmailBindsArguments` covers the MCP argument-binding path — the remaining gap is a true side-by-side comparison of a full response body.
