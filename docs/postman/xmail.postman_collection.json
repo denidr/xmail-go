@@ -1,0 +1,841 @@
+{
+  "info": {
+    "name": "xmail REST API",
+    "description": "Koleksi Postman lengkap untuk REST API xmail (email-as-a-service: kirim & terima email lewat REST + MCP).\n\nCara pakai:\n1. Import juga environment `xmail.postman_environment.json`, lalu pilih environment 'xmail (local)'.\n2. Set environment variable `apiKey` sesuai `XMAIL_API_KEY` di server.\n3. Jalankan 'Health / Healthz' untuk memastikan server hidup.\n4. Jalankan 'Accounts / Create Account' — test script-nya otomatis mengisi `accountId`, jadi request {id} lainnya langsung siap.\n5. Jalankan request sesuai urutan folder: Health -> Accounts -> Mail. Folder 'Errors' berisi skenario gagal (401/400/404).\n\nSemua response memakai envelope {\"data\": ..., \"error\": null}. Dokumentasi lengkap: docs/API.md.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5569", "type": "string" },
+    { "key": "apiKey", "value": "changeme", "type": "string" },
+    { "key": "accountId", "value": "", "type": "string" },
+    { "key": "messageUid", "value": "", "type": "string" }
+  ],
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      { "key": "value", "value": "{{apiKey}}", "type": "string" },
+      { "key": "key", "value": "X-API-Key", "type": "string" },
+      { "key": "in", "value": "header", "type": "string" }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Peringatan bila apiKey belum di-set.",
+          "if (!pm.environment.get('apiKey')) {",
+          "  console.warn('apiKey environment variable belum di-set — isi sesuai XMAIL_API_KEY server.');",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Semua endpoint (termasuk error) memakai envelope {data, error}.",
+          "pm.test('response memakai envelope {data, error}', function () {",
+          "  pm.response.to.be.json;",
+          "  const body = pm.response.json();",
+          "  pm.expect(body).to.have.property('data');",
+          "  pm.expect(body).to.have.property('error');",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Healthz (no auth)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/healthz", "host": ["{{baseUrl}}"], "path": ["healthz"] },
+            "description": "Health check. TIDAK butuh auth — dipakai orchestrator (Docker/k8s) untuk probe liveness.\n\nResponse 200: {\"data\":{\"status\":\"ok\"},\"error\":null}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status ok', () => pm.expect(pm.response.json().data.status).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Accounts",
+      "item": [
+        {
+          "name": "Create Account",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('response tidak membocorkan kredensial', () => {",
+                  "  pm.expect(body.data).to.not.have.property('password');",
+                  "  pm.expect(body.data).to.not.have.property('encrypted_secret');",
+                  "});",
+                  "if (body.data && body.data.id) {",
+                  "  pm.environment.set('accountId', body.data.id);",
+                  "  console.log('accountId =', body.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Gmail Kerja\",\n  \"email\": \"me@example.com\",\n  \"username\": \"me@example.com\",\n  \"password\": \"app-password-here\",\n  \"smtp\": { \"host\": \"smtp.gmail.com\", \"port\": 587, \"tls_mode\": \"starttls\" },\n  \"imap\": { \"host\": \"imap.gmail.com\", \"port\": 993, \"tls_mode\": \"tls\" }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/accounts", "host": ["{{baseUrl}}"], "path": ["accounts"] },
+            "description": "Buat akun email baru. Password langsung dienkripsi (AES-256-GCM).\n\nField: name, email, username (wajib); password (wajib di create); smtp/imap/pop3 minimal satu, tiap conn: {host, port, tls_mode}.\ntls_mode: \"tls\" | \"starttls\" | \"none\" (POP3 tidak mendukung \"starttls\").\n\nResponse 201: accountResponse TANPA credential. Mengisi environment `accountId`."
+          }
+        },
+        {
+          "name": "Create Account (IMAP-only, minimal)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('smtp & pop3 null', () => {",
+                  "  const d = pm.response.json().data;",
+                  "  pm.expect(d.smtp).to.eql(null);",
+                  "  pm.expect(d.pop3).to.eql(null);",
+                  "  pm.expect(d.imap).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Read-only IMAP\",\n  \"email\": \"me@example.com\",\n  \"username\": \"me@example.com\",\n  \"password\": \"app-password-here\",\n  \"imap\": { \"host\": \"imap.example.com\", \"port\": 993, \"tls_mode\": \"tls\" }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/accounts", "host": ["{{baseUrl}}"], "path": ["accounts"] },
+            "description": "Contoh akun hanya-IMAP (tanpa smtp/pop3). Membuktikan minimal satu protokol sudah cukup.\n\nCatatan: mengirim ke akun ini akan gagal (tidak ada konfigurasi smtp)."
+          }
+        },
+        {
+          "name": "Create Account (invalid — expect 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error.code validation_failed', () => pm.expect(pm.response.json().error.code).to.eql('validation_failed'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Kosong\",\n  \"email\": \"me@example.com\",\n  \"username\": \"me@example.com\",\n  \"password\": \"pw\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/accounts", "host": ["{{baseUrl}}"], "path": ["accounts"] },
+            "description": "Skenario gagal: tidak ada satupun protokol (smtp/imap/pop3) yang dikonfigurasi.\n\nEkspektasi: 400 validation_failed: at least one of smtp, imap, pop3 must be configured."
+          }
+        },
+        {
+          "name": "Create Account (POP3 starttls — expect 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status 400', () => pm.response.to.have.status(400));"]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Bad POP3\",\n  \"email\": \"me@example.com\",\n  \"username\": \"me@example.com\",\n  \"password\": \"pw\",\n  \"pop3\": { \"host\": \"pop.example.com\", \"port\": 110, \"tls_mode\": \"starttls\" }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/accounts", "host": ["{{baseUrl}}"], "path": ["accounts"] },
+            "description": "Skenario gagal: POP3 tidak mendukung tls_mode starttls (library POP3 yang dipakai tidak punya STARTTLS).\n\nEkspektasi: 400 validation_failed."
+          }
+        },
+        {
+          "name": "List Accounts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/accounts", "host": ["{{baseUrl}}"], "path": ["accounts"] },
+            "description": "List semua akun (tanpa credential), diurutkan berdasarkan name.\n\nResponse 200: {\"data\":[accountResponse,...],\"error\":null} — bisa []."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('data array', () => pm.expect(pm.response.json().data).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Account",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}"]
+            },
+            "description": "Detail 1 akun berdasarkan id (dari environment `accountId`).\n\nResponse 200: accountResponse. 404 not_found bila id tidak ada."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('id sesuai', () => pm.expect(pm.response.json().data.id).to.eql(pm.environment.get('accountId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Account (rename, keep password)",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Gmail (renamed)\",\n  \"email\": \"me@example.com\",\n  \"username\": \"me@example.com\",\n  \"smtp\": { \"host\": \"smtp.gmail.com\", \"port\": 587, \"tls_mode\": \"starttls\" },\n  \"imap\": { \"host\": \"imap.gmail.com\", \"port\": 993, \"tls_mode\": \"tls\" }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}"]
+            },
+            "description": "Update akun. `password` TIDAK dikirim di sini -> kredensial lama dipertahankan.\n\nPENTING: PUT = full replace. Field smtp/imap/pop3 yang tidak dikirim akan di-null-kan. Contoh ini mengirim smtp & imap, tapi tidak pop3 -> pop3 menjadi null.\n\nResponse 200: accountResponse."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('pop3 jadi null (full replace)', () => pm.expect(pm.response.json().data.pop3).to.eql(null));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Account (ganti password)",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Gmail (renamed)\",\n  \"email\": \"me@example.com\",\n  \"username\": \"me@example.com\",\n  \"password\": \"new-app-password\",\n  \"imap\": { \"host\": \"imap.gmail.com\", \"port\": 993, \"tls_mode\": \"tls\" }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}"]
+            },
+            "description": "Update dengan `password` non-null -> kredensial diganti & dienkripsi ulang.\n\nPerhatikan: example ini hanya mengirim `imap`, sehingga smtp & pop3 menjadi null (full replace)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('tidak membocorkan password', () => pm.expect(pm.response.json().data).to.not.have.property('password'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Test Connection (SMTP)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{ \"protocol\": \"smtp\" }", "options": { "raw": { "language": "json" } } },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}/test-connection",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}", "test-connection"]
+            },
+            "description": "Uji koneksi + autentikasi SMTP tanpa side-effect.\n\nResponse 200: {\"data\":{\"ok\":true},\"error\":null}. Gagal connect/auth -> 500."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Test Connection (IMAP)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{ \"protocol\": \"imap\" }", "options": { "raw": { "language": "json" } } },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}/test-connection",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}", "test-connection"]
+            },
+            "description": "Uji koneksi + autentikasi IMAP tanpa side-effect.\n\nResponse 200: {\"data\":{\"ok\":true},\"error\":null}."
+          }
+        },
+        {
+          "name": "Test Connection (POP3)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{ \"protocol\": \"pop3\" }", "options": { "raw": { "language": "json" } } },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}/test-connection",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}", "test-connection"]
+            },
+            "description": "Uji koneksi + autentikasi POP3 tanpa side-effect. Akun tanpa konfigurasi pop3 -> 400 validation_failed."
+          }
+        },
+        {
+          "name": "Delete Account",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}"]
+            },
+            "description": "Hapus akun (cascade ke credentials & messages_cache).\n\nResponse 200: {\"data\":{\"deleted\":true},\"error\":null} — BUKAN 204."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200 (bukan 204)', () => pm.response.to.have.status(200));",
+                  "pm.test('deleted true', () => pm.expect(pm.response.json().data.deleted).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Account After Delete (expect 404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}"]
+            },
+            "description": "Verifikasi akun benar-benar terhapus.\n\nEkspektasi: 404 not_found. (Jalankan setelah 'Delete Account'.)"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error.code not_found', () => pm.expect(pm.response.json().error.code).to.eql('not_found'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Mail",
+      "item": [
+        {
+          "name": "Send Email (plain text)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"to\": [\"bob@example.com\"],\n  \"subject\": \"Halo dari xmail\",\n  \"body_text\": \"Pesan percobaan dari Postman.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}/send",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}", "send"]
+            },
+            "description": "Kirim email plain-text. From = account.email (di-set otomatis).\n\nResponse 200: {\"data\":{\"status\":\"sent\"},\"error\":null}."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('sent', () => pm.expect(pm.response.json().data.status).to.eql('sent'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send Email (HTML + attachment + headers + cc/bcc)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"to\": [\"bob@example.com\"],\n  \"cc\": [\"carol@example.com\"],\n  \"bcc\": [\"dave@example.com\"],\n  \"subject\": \"Laporan bulanan\",\n  \"body_text\": \"Terlampir laporan.\",\n  \"body_html\": \"<p>Terlampir <b>laporan</b>.</p>\",\n  \"headers\": { \"X-Priority\": \"1\", \"Reply-To\": \"reply@example.com\" },\n  \"attachments\": [\n    { \"filename\": \"laporan.txt\", \"content_type\": \"text/plain\", \"data_base64\": \"SGVsbG8sIHhtYWlsIQ==\" }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}/send",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}", "send"]
+            },
+            "description": "Kirim email lengkap: HTML + plain-text (jadi multipart/alternative), cc/bcc, custom headers, dan attachment.\n\ndata_base64 = isi file base64 (contoh: 'SGVsbG8sIHhtYWlsIQ==' = 'Hello, xmail!').\nCatatan: content_type saat ini tidak dipakai; tipe MIME lampiran dideteksi dari nama file."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send Email (no recipients — expect 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error.code validation_failed', () => pm.expect(pm.response.json().error.code).to.eql('validation_failed'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subject\": \"tanpa penerima\",\n  \"body_text\": \"gagal\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}/send",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}", "send"]
+            },
+            "description": "Skenario gagal: `to` kosong.\n\nEkspektasi: 400 validation_failed: to is required."
+          }
+        },
+        {
+          "name": "Fetch Messages (cache-first)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}/messages?protocol=imap&folder=INBOX&limit=20&offset=0&refresh=false",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}", "messages"],
+              "query": [
+                { "key": "protocol", "value": "imap", "description": "imap | pop3" },
+                { "key": "folder", "value": "INBOX", "description": "folder IMAP (POP3 selalu INBOX)" },
+                { "key": "limit", "value": "20", "description": "jumlah maks pesan (<=0 -> default 20)" },
+                { "key": "offset", "value": "0", "description": "lewati N pesan terbaru" },
+                { "key": "refresh", "value": "false", "description": "true/1 = paksa live-fetch" }
+              ]
+            },
+            "description": "Fetch daftar email (metadata saja). Cache-first: bila cache lokal sudah mencakup window, tidak dial server. Request kedua dengan window sama biasanya cache hit.\n\nResponse 200: {\"data\":[Message,...],\"error\":null}."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('data array', () => pm.expect(pm.response.json().data).to.be.an('array'));",
+                  "const d = pm.response.json().data;",
+                  "if (d && d.length > 0 && d[0].uid) { pm.environment.set('messageUid', d[0].uid); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fetch Messages (refresh / live)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}/messages?refresh=true&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}", "messages"],
+              "query": [
+                { "key": "refresh", "value": "true", "description": "paksa live dial" },
+                { "key": "limit", "value": "10" }
+              ]
+            },
+            "description": "Paksa live-fetch dari server, abaikan cache — untuk memastikan data paling baru."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().data;",
+                  "if (d && d.length > 0 && d[0].uid) { pm.environment.set('messageUid', d[0].uid); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Fetch Messages (POP3)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}/messages?protocol=pop3&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}", "messages"],
+              "query": [
+                { "key": "protocol", "value": "pop3" },
+                { "key": "limit", "value": "10" }
+              ]
+            },
+            "description": "Fetch via POP3. Catatan: folder selalu INBOX, is_read selalu true, attachments selalu kosong (POP3 tidak punya flag/struktur body)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Check New Emails",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"protocol\": \"imap\",\n  \"folder\": \"INBOX\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}/check",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}", "check"]
+            },
+            "description": "Cek email baru. SELALU dial ke server (bukan cache), lalu memperbarui cache untuk 50 pesan terbaru.\n\nBody: {protocol?, folder?} (default imap/INBOX).\nResponse 200: {\"data\":{\"unread_count\":5,\"new_count\":2},\"error\":null}\n- unread_count: dilaporkan server (IMAP saja; POP3 = 0)\n- new_count: dari 50 pesan terbaru yang belum ada di cache"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().data;",
+                  "pm.test('punya unread_count & new_count', () => {",
+                  "  pm.expect(d).to.have.property('unread_count');",
+                  "  pm.expect(d).to.have.property('new_count');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mark Message Read",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"protocol\": \"imap\",\n  \"folder\": \"INBOX\",\n  \"uid\": \"{{messageUid}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}/messages/read",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}", "messages", "read"]
+            },
+            "description": "Tandai 1 pesan sebagai sudah dibaca (menset flag \\Seen). IMAP-only; POP3 -> 400.\n\n`uid` diisi dari `messageUid` (otomatis di-set oleh request Fetch Messages).\nResponse 200: {\"data\":{\"marked_read\":true},\"error\":null}."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('marked_read true', () => pm.expect(pm.response.json().data.marked_read).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mark Message Read (missing uid — expect 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error.code validation_failed', () => pm.expect(pm.response.json().error.code).to.eql('validation_failed'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"protocol\": \"imap\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}/messages/read",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}", "messages", "read"]
+            },
+            "description": "Skenario gagal: `uid` wajib.\n\nEkspektasi: 400 validation_failed: uid is required."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Errors (examples)",
+      "item": [
+        {
+          "name": "Unauthorized (no X-API-Key — expect 401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error.code unauthorized', () => pm.expect(pm.response.json().error.code).to.eql('unauthorized'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/accounts", "host": ["{{baseUrl}}"], "path": ["accounts"] },
+            "description": "Request tanpa header X-API-Key.\n\nEkspektasi: 401 {\"data\":null,\"error\":{\"code\":\"unauthorized\",...}}."
+          }
+        },
+        {
+          "name": "Invalid JSON (unknown field — expect 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error.code invalid_json', () => pm.expect(pm.response.json().error.code).to.eql('invalid_json'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"X\",\n  \"email\": \"x@example.com\",\n  \"username\": \"x@example.com\",\n  \"password\": \"pw\",\n  \"imap\": { \"host\": \"imap.example.com\", \"port\": 993, \"tls_mode\": \"tls\" },\n  \"unknown_field\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/accounts", "host": ["{{baseUrl}}"], "path": ["accounts"] },
+            "description": "Skenario gagal: body punya field yang tidak dikenal (`unknown_field`). Decoder memakai DisallowUnknownFields.\n\nEkspektasi: 400 invalid_json."
+          }
+        },
+        {
+          "name": "Not Found (unknown account — expect 404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error.code not_found', () => pm.expect(pm.response.json().error.code).to.eql('not_found'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts/00000000-0000-0000-0000-000000000000",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "00000000-0000-0000-0000-000000000000"]
+            },
+            "description": "Skenario gagal: id akun yang tidak ada.\n\nEkspektasi: 404 not_found."
+          }
+        }
+      ]
+    },
+    {
+      "name": "MCP",
+      "item": [
+        {
+          "name": "initialize",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": {},\n    \"clientInfo\": { \"name\": \"postman\", \"version\": \"0.0.0\" }\n  }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+            "description": "Handshake MCP via Streamable HTTP. Header Accept WAJIB memuat application/json DAN text/event-stream. Auth X-API-Key otomatis dari koleksi.\n\nBila balasan SSE, payload JSON-RPC ada pada baris yang diawali 'data:'. Untuk pemakaian nyata gunakan MCP client (lihat docs/MCP_CLIENT_GUIDE.md)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status 2xx', () => pm.expect(pm.response.code).to.be.within(200, 299));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "tools/list",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2,\n  \"method\": \"tools/list\",\n  \"params\": {}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+            "description": "Daftar MCP tools: list_accounts, send_email, fetch_emails, check_new_emails (beserta JSON schema argumennya)."
+          }
+        },
+        {
+          "name": "tools/call → list_accounts",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 3,\n  \"method\": \"tools/call\",\n  \"params\": { \"name\": \"list_accounts\", \"arguments\": {} }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+            "description": "Panggil tool list_accounts (tanpa argumen). Output: [{id, name, email}] — sama dengan REST GET /accounts, tanpa connection config/credential."
+          }
+        },
+        {
+          "name": "tools/call → fetch_emails",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/json, text/event-stream" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 4,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"fetch_emails\",\n    \"arguments\": { \"account_id\": \"{{accountId}}\", \"protocol\": \"imap\", \"limit\": 5 }\n  }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
+            "description": "Panggil tool fetch_emails. account_id diisi dari environment `accountId`.\n\nCatatan: MCP fetch_emails tidak punya parameter `offset` (REST punya)."
+          }
+        }
+      ]
+    }
+  ]
+}
