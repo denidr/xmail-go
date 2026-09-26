@@ -1,4 +1,4 @@
-.PHONY: build run test test-integration test-race coverage tidy docker-build docker-run \
+.PHONY: build run test test-all test-integration test-race coverage tidy docker-build docker-run \
         release-docker-amd64 release-docker-arm64 release-windows-amd64 release-all
 
 VERSION ?= dev
@@ -14,6 +14,19 @@ run:
 # green before any phase in PLAN.md §5 is considered done.
 test:
 	go test ./...
+
+# Everything a dev should pass before committing: gofmt, go mod tidy
+# -diff, vet, build, unit + integration tests, and the Windows tray
+# cross-compile check. Thin wrapper around scripts/test.sh so the logic
+# also works standalone in CI without make — use scripts\test.ps1 on
+# Windows without Git Bash/WSL. Flags: bash scripts/test.sh --help
+# (--race needs cgo/gcc, --coverage prints a report).
+#
+# Invoked via `bash` on purpose: the scripts are stored mode 100644 in
+# git (same as scripts/release.sh), so relying on the executable bit
+# would fail with "Permission denied" on a fresh Linux/macOS checkout.
+test-all:
+	bash scripts/test.sh
 
 # Integration tests (build tag "integration") — in-process fake SMTP/IMAP/
 # POP3 servers, no external docker needed. See PLAN.md §6.2.
@@ -37,7 +50,7 @@ docker-build:
 	docker build -t $(DOCKER_IMAGE):local .
 
 docker-run:
-	docker run --rm -p 8080:8080 -v xmail-data:/app/data --env-file .env $(DOCKER_IMAGE):local
+	docker run --rm -p 5569:5569 -v xmail-data:/app/data --env-file .env $(DOCKER_IMAGE):local
 
 ## --- Release builds: 3 target platforms (see PLAN.md "Release Build" and
 ## scripts/release.sh, ARCHITECTURE.md "Build & Release"). These targets are
