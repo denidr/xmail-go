@@ -13,7 +13,7 @@ import (
 
 // Config holds all runtime settings for the xmail service.
 type Config struct {
-	ListenAddr     string // XMAIL_LISTEN_ADDR, e.g. ":8080"
+	ListenAddr     string // XMAIL_LISTEN_ADDR, e.g. ":5569"
 	DBPath         string // XMAIL_DB_PATH, e.g. "xmail.db"
 	EncryptionKey  []byte // decoded from XMAIL_ENCRYPTION_KEY, must be 32 bytes (AES-256)
 	APIKey         string // XMAIL_API_KEY, MVP single static key
@@ -31,7 +31,7 @@ const (
 	EnvAPIKey        = "XMAIL_API_KEY"
 	EnvMCPStdio      = "XMAIL_MCP_STDIO"
 
-	defaultListenAddr = ":8080"
+	defaultListenAddr = ":5569"
 	defaultDBPath     = "xmail.db"
 
 	// encryptionKeyLen is the required decoded length of

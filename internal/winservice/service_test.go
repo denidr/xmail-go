@@ -94,7 +94,7 @@ func TestBuildServiceConfig_AbsolutizesDBPath(t *testing.T) {
 	cfg := config.Config{
 		APIKey:        "k",
 		EncryptionKey: make([]byte, 32),
-		ListenAddr:    ":8080",
+		ListenAddr:    ":5569",
 		DBPath:        "xmail.db", // relative, matches .env.example's default
 	}
 

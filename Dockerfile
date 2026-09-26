@@ -21,6 +21,6 @@ COPY --from=build /out/xmail /app/xmail
 COPY --from=build --chown=nonroot:nonroot /out/data /app/data
 VOLUME ["/app/data"]
 ENV XMAIL_DB_PATH=/app/data/xmail.db
-ENV XMAIL_LISTEN_ADDR=:8080
-EXPOSE 8080
+ENV XMAIL_LISTEN_ADDR=:5569
+EXPOSE 5569
 ENTRYPOINT ["/app/xmail"]
