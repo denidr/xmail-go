@@ -37,11 +37,18 @@ var assetsFS embed.FS
 var version = "dev"
 
 func main() {
+	// Set up logging before anything else can fail. A windowsgui build has
+	// no console, so without the log file (and the dialog in fatalStartup)
+	// a startup error would be completely invisible — see startup.go.
+	logPath, closeLog := setupLogging()
+	defer closeLog()
+
+	log.Printf("xmail-tray: version=%s (log: %s)", version, logPathOrUnavailable(logPath))
+
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		fatalStartup(logPath, "xmail — konfigurasi belum lengkap", err)
 	}
-	log.Printf("xmail-tray: version=%s", version)
 
 	if !winservice.Interactive() {
 		// Launched by the Windows Service Control Manager: no tray UI,
@@ -50,16 +57,25 @@ func main() {
 		// directs.
 		svc, err := winservice.New(cfg, version)
 		if err != nil {
-			log.Fatalf("winservice: %v", err)
+			fatalStartup(logPath, "xmail — gagal menyiapkan Windows Service", err)
 		}
 		if err := svc.Run(); err != nil {
-			log.Fatalf("winservice: run: %v", err)
+			fatalStartup(logPath, "xmail — Windows Service berhenti dengan error", err)
 		}
 		return
 	}
 
 	t := &trayApp{cfg: cfg, version: version}
 	systray.Run(t.onReady, t.onExit)
+}
+
+// logPathOrUnavailable keeps the startup line readable when no log file
+// could be opened (e.g. an unwritable cache directory).
+func logPathOrUnavailable(logPath string) string {
+	if logPath == "" {
+		return "(file log tidak tersedia — hanya stderr)"
+	}
+	return logPath
 }
 
 // trayApp holds the foreground (non-service) run state controlled by

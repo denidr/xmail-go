@@ -298,7 +298,7 @@ Didaftarkan di `internal/mcpserver/server.go`, delegasi ke service yang sama den
 > **Catatan implementasi (penyesuaian dari rencana awal, & apa yang SENGAJA belum diverifikasi):**
 > - **Dependency `kardianos/service`+`fyne.io/systray` ternyata sudah masuk `go.sum` sejak `go mod tidy` di Fase 3** — Go tooling menariknya karena file-file berlabel `//go:build windows && xmailtray` tetap dipertimbangkan saat `go mod tidy` menghitung graph dependency lengkap ("all" pattern lintas platform), meskipun tetap **tidak ikut ter-compile** di build default (dibuktikan dengan `go list ./...` yang konsisten mengecualikan `cmd/xmail-tray`/`internal/winservice` sepanjang Fase 1-6). Jadi tidak ada `go get` eksplisit terpisah yang perlu dijalankan lagi di fase ini.
 > - **Icon `assets/icon.ico` digenerate programatik** (16x16 solid-color + garis amplop sederhana lewat script Go sekali-jalan, disimpan ke `assets/icon.ico` lalu di-copy ke `cmd/xmail-tray/icon.ico` untuk `go:embed`) — bukan aset desain final. Ganti file ini kapan saja sebelum rilis publik kalau branding sudah ada; format/ukuran (ICO 32bpp+AND-mask) sudah teruji jalan di `systray.SetIcon`.
-> - **Tidak ada dialog/MessageBox untuk feedback Install/Uninstall/error** — hasil aksi cuma di-log (`log.Println`/`log.Printf`), bukan popup. `fyne.io/systray` tidak menyediakan dialog primitive; implementasi MessageBox asli butuh syscall `user32.dll` tambahan (`golang.org/x/sys/windows`) — **masuk backlog Fase 9** kalau UX ini penting untuk end-user non-teknis.
+> - **Dialog/MessageBox**: untuk **error saat start**, sekarang ada message box nyata (`cmd/xmail-tray/startup.go` — `MessageBoxW` lewat `syscall.NewLazyDLL`, jadi **tanpa** dependency tambahan `golang.org/x/sys`). Feedback untuk aksi Install/Uninstall **masih** hanya lewat log (`fyne.io/systray` tidak punya dialog primitive) — itu tetap backlog. Alasan error-start akhirnya wajib punya dialog: lihat §10.10.
 > - **⚠️ `Install as Windows Service`/`Uninstall` SENGAJA TIDAK dieksekusi sungguhan di sesi ini** — install service Windows adalah perubahan level-sistem (butuh Administrator, mendaftar entry baru di Service Control Manager) yang jauh lebih sulit dibalik daripada sekadar menjalankan/mematikan proses biasa. Ini di luar scope "jalankan & verifikasi" yang aman dilakukan otomatis tanpa persetujuan eksplisit pengguna — beda dengan menjalankan `.exe` secara interaktif lalu langsung dimatikan (yang sudah dilakukan & terbukti aman/reversibel dalam hitungan detik). **Kode `program.Start`/`program.Stop`/`svc.Install()`/`svc.Uninstall()` sudah lengkap dan mengikuti API `kardianos/service` standar** (contoh resminya identik polanya), tapi verifikasi "muncul di `services.msc` dan bisa di-start/stop dari sana" masih **perlu dilakukan manual oleh user** (jalankan `.exe`, klik "Install as Windows Service" dari tray, cek `services.msc`/`sc query XmailService`).
 
 ### Fase 8 — Release Packaging (3 Target) ✅ SELESAI — SEMUA 3 TARGET DIBUILD & DIVERIFIKASI NYATA
@@ -328,6 +328,8 @@ Didaftarkan di `internal/mcpserver/server.go`, delegasi ke service yang sama den
 Prinsip: piramida test — banyak unit test cepat (stdlib `testing`, tanpa network), integration test secukupnya (pakai fake/in-process server dulu, baru docker kalau perlu realistis), dan checklist manual buat hal yang gak bisa diotomasi penuh (tray icon, Windows Service beneran).
 
 Tidak pakai testing framework tambahan (`testify`, dll) — stdlib `testing` + table-driven test cukup, sejalan dengan prinsip "minim dependency" project ini. Kalau assertion jadi berulang-ulang, boleh dipertimbangkan lagi belakangan.
+
+**Pintu masuk tunggal untuk dev**: `bash scripts/test.sh` (atau `scripts\test.ps1` di Windows tanpa Git Bash; `make test-all` cuma alias) menjalankan seluruh gate sekaligus dan **berhenti di kegagalan pertama**: `gofmt`, `go mod tidy -diff`, `go vet`, `go build`, cek kompilasi tray (`GOOS=windows -tags xmailtray` — jadi ikut jalan di Linux/macOS), unit + integration test, test `internal/winservice` + `cmd/xmail-tray` (hanya host Windows), dan `node --check` untuk `app.js` dashboard bila `node` tersedia. Race detector **opt-in** (`--race`/`-Race`) karena butuh cgo/gcc (§6.4). Dipakai sebagai gate sebelum commit/push; detail ada di README "Cek lengkap sebelum commit".
 
 ### 6.1 Unit Test (jalan di `go test ./...`, tanpa network/docker)
 
@@ -548,3 +550,37 @@ Review arsitektur (command `improve-codebase-architecture`) menemukan 5 kandidat
 File baru: `CONTEXT.md` (glosarium domain), `docs/adr/0001-unify-protocol-dispatch.md`, `internal/account/protocol.go`, `internal/storage/migrations/0005_message_cache_position.sql`. Catatan perilaku: satu efek samping tak sengaja dari B (dan dipertegas C) — `MessageCache.Upsert` menyimpan baris di bawah `key.Folder` (folder ter-resolve), bukan `m.Folder` per pesan; untuk IMAP keduanya selalu sama, untuk POP3 kini selalu `INBOX`. Satu-satunya perubahan perilaku HTTP yang disengaja di §10.9 adalah perbaikan cache `offset` di atas; perubahan body `/healthz` berasal dari §10.8 #30, bukan dari deepening ini.
 
 **Hasil akhir (§10.9)**: `go build`/`go vet` (default + `-tags xmailtray`) bersih; `go test ./...` = **120**; `go test -tags integration ./...` = **139**; `go test -tags xmailtray ./internal/winservice/` = 3 (semua dihitung sebagai baris `=== RUN`, termasuk subtest).
+
+### 10.10 Bug lapangan — rilis Windows gagal start tanpa jejak sama sekali
+
+Ditemukan dengan **menjalankan artefak rilis sebenarnya** (`dist/xmail-tray-windows-amd64-0.1.0.exe`), bukan dari review kode: double-click `.exe`-nya tidak memunculkan apa pun — tidak ada tray icon, tidak ada entri di Task Manager, tidak ada di `services.msc`, tidak ada log. Persis kelas bug yang ARCHITECTURE §8 sudah berulang kali ingatkan ("cuma ketahuan kalau benar-benar dijalankan").
+
+**Diagnosis** (repro: jalankan `.exe` dengan environment bersih + stdio di-redirect, meniru double-click):
+
+```
+exit code = 1
+stderr: config: XMAIL_API_KEY is required (static API key for X-API-Key auth)
+```
+
+Jadi prosesnya **memang jalan lalu langsung mati**: `config.Load()` gagal (tidak ada env, tidak ada `.env`) → `log.Fatalf` → `os.Exit(1)`. Dua hal membuatnya tak terlihat:
+
+1. Build rilis memakai `-H=windowsgui` (subsystem 2), jadi **stderr tidak terhubung** saat dijalankan dari Explorer. Pesan fatal itu tidak pergi ke mana pun.
+2. Tidak ada log file di mana pun sebelumnya.
+
+Akibatnya rantainya konsisten dengan laporan: mati di detik pertama → tidak ada tray (belum sampai `systray.Run`) → tidak di Task Manager (prosesnya sudah hilang) → tidak ada di `services.msc` (belum sempat install). `.env` pun tidak ketemu karena `godotenv.Load()` membaca **cwd**, dan cwd exe yang di-double-click = folder exe (`dist/`), bukan root repo.
+
+| # | Temuan | Fix | Test pembukti |
+|---|---|---|---|
+| 1 | Error start fatal tidak punya permukaan yang terlihat di build `windowsgui` — pengguna tidak dapat petunjuk apa pun | `cmd/xmail-tray/startup.go`: `fatalStartup()` menampilkan `MessageBoxW` (lewat `syscall.NewLazyDLL`, **tanpa dependency baru** — bukan `golang.org/x/sys`) berisi pesan yang actionable (dua env var wajib, letakkan `.env` di folder exe, cara generate key, plus path log). Dialog hanya muncul kalau ada user yang bisa melihat (`winservice.Interactive()`); `XMAIL_NO_DIALOG=1` mematikannya untuk run otomatis (dialog modal akan menggantungkan CI/smoke test) | `TestStartupErrorMessage_IsActionable`, `TestDialogAllowed_SuppressedByEnv` |
+| 2 | Tidak ada jejak apa pun setelah proses mati | `setupLogging()` menyalin semua baris log ke `%LOCALAPPDATA%\xmail\xmail-tray.log` sejak sebelum `config.Load()`, dengan writer best-effort karena `io.MultiWriter` berhenti di writer pertama yang gagal — stderr yang tak terhubung tidak boleh menelan baris file | `TestSetupLoggingIn_WritesToFile` (**dibuktikan gagal** saat file-logging dimatikan: "log file does not contain the logged line", persis gejalanya), `TestSetupLoggingIn_EmptyBaseIsNoop` |
+| 3 | Semua titik `log.Fatalf` di tray hanya menulis ke stderr | `main.go` mengarahkan tiga jalur fatal (config, `winservice.New`, `svc.Run`) ke `fatalStartup` | terverifikasi live di artefak rilis (di bawah) |
+
+**Verifikasi langsung di artefak rilis yang diperbaiki** (rebuild 0.1.0):
+
+- tanpa env + `XMAIL_NO_DIALOG=1` → exit 1, dan log berisi `version=0.1.0` + `fatal: XMAIL_API_KEY is required ...` (sebelumnya: tidak ada file log sama sekali).
+- tanpa env, dialog aktif → proses **berhenti pada window modal berjudul `xmail — konfigurasi belum lengkap`** (`MainWindowHandle` non-nol), bukan hilang.
+- dengan env → proses hidup normal (tray jalan), log mencatat versi.
+
+Catatan: ini **beda** dari §10.6 #19. #19 soal service yang di-install (`EnvVars` tidak di-set, jadi SCM meluncurkan proses dengan environment kosong); yang ini soal proses **interaktif** yang memang belum pernah punya konfigurasi, dan soal errornya yang tidak terlihat. Keduanya tetap berlaku dan independen.
+
+**Hasil akhir (§10.10)**: `go test ./...` = **130**; `go test -tags integration ./...` = **149**; `go test -tags xmailtray ./internal/winservice/ ./cmd/xmail-tray/` = 3 + **5** baru. Tidak ada dependency baru. `scripts/test.sh`/`test.ps1` diperluas supaya ikut menjalankan `./cmd/xmail-tray/` dengan tag `xmailtray`.
