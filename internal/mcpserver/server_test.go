@@ -70,6 +70,89 @@ func (m mockFetcherChecker) Check(ctx context.Context, folder string) (int, erro
 	return m.unread, nil
 }
 
+// mockFolderLister/mockIMAPClient-style doubles and helpers for the
+// list_folders tool (mirrors internal/api's folders_test.go).
+type mockFolderLister struct {
+	folders []mailer.Folder
+	err     error
+}
+
+func (m mockFolderLister) ListFolders(ctx context.Context) ([]mailer.Folder, error) {
+	return m.folders, m.err
+}
+
+func registerIMAPFolderLister(svc *account.Service, fn func(cfg account.ConnectionConfig, username, secret string) mailer.FolderLister) {
+	svc.RegisterProtocol(account.ProtocolIMAP, account.Protocol{FolderLister: fn})
+}
+
+func TestHandleListFolders(t *testing.T) {
+	ctx := context.Background()
+	s, svc := newTestServer(t)
+
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	fixture := []mailer.Folder{
+		{Name: "INBOX", Delimiter: "/"},
+		{Name: "[Gmail]", Delimiter: "/", Attributes: []string{`\Noselect`}},
+	}
+	registerIMAPFolderLister(svc, func(cfg account.ConnectionConfig, username, secret string) mailer.FolderLister {
+		return mockFolderLister{folders: fixture}
+	})
+
+	result, err := s.handleListFolders(ctx, mcp.CallToolRequest{}, listFoldersArgs{AccountID: created.ID})
+	if err != nil {
+		t.Fatalf("handleListFolders() error = %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleListFolders() IsError = true, content = %+v", result.Content)
+	}
+	folders, ok := result.StructuredContent.([]mailer.Folder)
+	if !ok || len(folders) != 2 || folders[1].Name != "[Gmail]" {
+		t.Errorf("StructuredContent = %+v (%T), want fixture", result.StructuredContent, result.StructuredContent)
+	}
+}
+
+func TestHandleListFolders_MissingAccountID(t *testing.T) {
+	s, _ := newTestServer(t)
+	result, err := s.handleListFolders(context.Background(), mcp.CallToolRequest{}, listFoldersArgs{})
+	if err != nil {
+		t.Fatalf("unexpected transport error = %v", err)
+	}
+	if !result.IsError {
+		t.Error("IsError = false, want true for missing account_id")
+	}
+}
+
+// TestHandleListFolders_ProtocolWithoutFolders locks the MCP side of the
+// "no folders" guard (PLAN-FOLDERS.md §3.8): a folder-less protocol is a
+// tool-level error, not a crash or an empty list.
+func TestHandleListFolders_ProtocolWithoutFolders(t *testing.T) {
+	ctx := context.Background()
+	s, svc := newTestServer(t)
+
+	acct := sampleAccount()
+	acct.POP3 = &account.ConnectionConfig{Host: "pop.example.com", Port: 995, TLSMode: account.TLSModeTLS}
+	created, err := svc.Create(ctx, acct, "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	// POP3 registered with a Fetcher only (no FolderLister), like the real one.
+	svc.RegisterProtocol(account.ProtocolPOP3, account.Protocol{Fetcher: func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcherChecker{}
+	}})
+
+	result, err := s.handleListFolders(ctx, mcp.CallToolRequest{}, listFoldersArgs{AccountID: created.ID, Protocol: "pop3"})
+	if err != nil {
+		t.Fatalf("unexpected transport error = %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("IsError = false, want true for pop3; content = %+v", result.Content)
+	}
+}
+
 func TestHandleListAccounts(t *testing.T) {
 	ctx := context.Background()
 	s, svc := newTestServer(t)
@@ -355,6 +438,48 @@ func TestTransport_CheckNewEmailsWireKeys(t *testing.T) {
 	}
 	if sc["new_count"] != float64(1) {
 		t.Errorf("wire new_count = %v, want 1 (first check, nothing cached yet)", sc["new_count"])
+	}
+}
+
+// TestTransport_ListFoldersBindsArguments drives list_folders through
+// the real Streamable HTTP transport, so its argument binding and wire
+// JSON keys (name/delimiter/attributes) are covered, not just the
+// direct handler call (which skips BindArguments).
+func TestTransport_ListFoldersBindsArguments(t *testing.T) {
+	ctx := context.Background()
+	s, svc := newTestServer(t)
+
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	registerIMAPFolderLister(svc, func(cfg account.ConnectionConfig, username, secret string) mailer.FolderLister {
+		return mockFolderLister{folders: []mailer.Folder{
+			{Name: "INBOX", Delimiter: "/"},
+			{Name: "[Gmail]/Surat Terkirim", Delimiter: "/", Attributes: []string{`\Sent`}},
+		}}
+	})
+
+	c := dialMCP(t, s)
+	res, err := c.CallTool(ctx, mcp.CallToolRequest{Params: mcp.CallToolParams{
+		Name:      toolListFolders,
+		Arguments: map[string]any{"account_id": created.ID},
+	}})
+	if err != nil {
+		t.Fatalf("CallTool() error = %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("CallTool() IsError = true, content = %+v", res.Content)
+	}
+	// StructuredContent round-tripped through JSON, so it is a decoded
+	// slice of maps keyed by the actual field names.
+	sc, ok := res.StructuredContent.([]any)
+	if !ok || len(sc) != 2 {
+		t.Fatalf("StructuredContent = %+v (%T), want 2 entries", res.StructuredContent, res.StructuredContent)
+	}
+	first, ok := sc[0].(map[string]any)
+	if !ok || first["name"] != "INBOX" || first["delimiter"] != "/" {
+		t.Errorf("wire folder[0] = %+v, want name=INBOX delimiter=/", sc[0])
 	}
 }
 

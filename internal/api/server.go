@@ -55,6 +55,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /accounts/{id}", s.handleAccountDelete)
 	s.mux.HandleFunc("POST /accounts/{id}/test-connection", s.handleTestConnection)
 	s.mux.HandleFunc("POST /accounts/{id}/send", s.handleSend)
+	s.mux.HandleFunc("GET /accounts/{id}/folders", s.handleFoldersList)
 	s.mux.HandleFunc("GET /accounts/{id}/messages", s.handleMessagesList)
 	s.mux.HandleFunc("POST /accounts/{id}/check", s.handleCheck)
 	s.mux.HandleFunc("POST /accounts/{id}/messages/read", s.handleMarkRead)

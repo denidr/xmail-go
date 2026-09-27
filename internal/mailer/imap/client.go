@@ -4,6 +4,7 @@ package imap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -33,6 +34,7 @@ var (
 	_ mailer.Checker        = (*Client)(nil)
 	_ mailer.Marker         = (*Client)(nil)
 	_ mailer.FetcherChecker = (*Client)(nil)
+	_ mailer.FolderLister   = (*Client)(nil)
 )
 
 // dial connects and logs in, mapping account.TLSMode to the matching
@@ -80,6 +82,55 @@ func (c *Client) TestConnection(ctx context.Context) error {
 	return nil
 }
 
+// ListFolders returns every mailbox on the server, via IMAP LIST "". It
+// is always live — one cheap command, and a cached list would go stale
+// (see PLAN-FOLDERS.md §2). Results are sorted by name so the REST and
+// MCP outputs are deterministic regardless of the server's response
+// order (same rationale as Fetch's sort by UID).
+func (c *Client) ListFolders(ctx context.Context) ([]mailer.Folder, error) {
+	cl, err := c.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer closeClient(cl)
+
+	// nil options: non-zero ListOptions requires IMAP4rev2/LIST-EXTENDED,
+	// so this stays safe on every server. Close() is mandatory.
+	cmd := cl.List("", "*", nil)
+	defer cmd.Close()
+	data, err := cmd.Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imap: list folders: %w", err)
+	}
+
+	out := make([]mailer.Folder, 0, len(data))
+	for _, d := range data {
+		f := mailer.Folder{Name: d.Mailbox}
+		if d.Delim != 0 {
+			f.Delimiter = string(d.Delim)
+		}
+		for _, a := range d.Attrs {
+			f.Attributes = append(f.Attributes, string(a))
+		}
+		out = append(out, f)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// classifyFolderErr converts an IMAP "no such mailbox" status response
+// into mailer.ErrFolderNotFound (wrapped, so the server text survives).
+// Anything else — dial failures, auth errors, timeouts, other IMAP
+// errors — is returned unchanged, so a real server problem is not
+// mistaken for a bad folder name (see PLAN-FOLDERS.md §3.8).
+func classifyFolderErr(err error) error {
+	var ie *imapv2.Error
+	if errors.As(err, &ie) && (ie.Code == imapv2.ResponseCodeNonExistent || ie.Code == imapv2.ResponseCodeTryCreate) {
+		return fmt.Errorf("%w: %s", mailer.ErrFolderNotFound, ie.Text)
+	}
+	return err
+}
+
 // Fetch selects folder and returns up to limit messages (most recent
 // first), skipping offset. Uses the IMAP ENVELOPE + FLAGS + UID +
 // BODYSTRUCTURE fetch items — message bodies themselves are not
@@ -95,7 +146,7 @@ func (c *Client) Fetch(ctx context.Context, folder string, limit, offset int) ([
 
 	selected, err := cl.Select(folder, nil).Wait()
 	if err != nil {
-		return nil, fmt.Errorf("imap: select %q: %w", folder, err)
+		return nil, fmt.Errorf("imap: select %q: %w", folder, classifyFolderErr(err))
 	}
 	if selected.NumMessages == 0 {
 		return nil, nil
@@ -156,7 +207,7 @@ func (c *Client) Check(ctx context.Context, folder string) (unread int, err erro
 
 	data, err := cl.Status(folder, &imapv2.StatusOptions{NumUnseen: true}).Wait()
 	if err != nil {
-		return 0, fmt.Errorf("imap: status %q: %w", folder, err)
+		return 0, fmt.Errorf("imap: status %q: %w", folder, classifyFolderErr(err))
 	}
 	if data.NumUnseen == nil {
 		return 0, nil
@@ -181,7 +232,7 @@ func (c *Client) MarkRead(ctx context.Context, folder, uid string) error {
 	defer closeClient(cl)
 
 	if _, err := cl.Select(folder, nil).Wait(); err != nil {
-		return fmt.Errorf("imap: select %q: %w", folder, err)
+		return fmt.Errorf("imap: select %q: %w", folder, classifyFolderErr(err))
 	}
 
 	uidSet := imapv2.UIDSetNum(imapv2.UID(n))

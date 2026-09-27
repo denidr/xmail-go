@@ -109,6 +109,9 @@ func wireMailer(svc *account.Service) {
 		Fetcher: func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {
 			return imap.New(cfg, username, secret)
 		},
+		FolderLister: func(cfg account.ConnectionConfig, username, secret string) mailer.FolderLister {
+			return imap.New(cfg, username, secret)
+		},
 	})
 	svc.RegisterProtocol(account.ProtocolPOP3, account.Protocol{
 		Fetcher: func(cfg account.ConnectionConfig, username, secret string) mailer.Fetcher {

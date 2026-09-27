@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -81,7 +82,24 @@ func (s *fakeSession) Rename(mailbox, newName string, options *imapv2.RenameOpti
 }
 func (s *fakeSession) Subscribe(mailbox string) error   { return nil }
 func (s *fakeSession) Unsubscribe(mailbox string) error { return nil }
+
+// fakeFolderTemplate is the fixed set of mailboxes the fake server
+// reports from LIST — deliberately unsorted, with an attribute-less
+// entry (delimiter NIL) and a role attribute, so ListFolders' sort and
+// its ListData -> mailer.Folder mapping are both exercised.
+var fakeFolderTemplate = []*imapv2.ListData{
+	{Mailbox: "INBOX", Delim: '/'},
+	{Mailbox: "[Gmail]/Surat Terkirim", Delim: '/', Attrs: []imapv2.MailboxAttr{imapv2.MailboxAttrSent, imapv2.MailboxAttrHasNoChildren}},
+	{Mailbox: "[Gmail]", Delim: '/', Attrs: []imapv2.MailboxAttr{imapv2.MailboxAttrNoSelect, imapv2.MailboxAttrHasChildren}},
+	{Mailbox: "NoDelimiter"},
+}
+
 func (s *fakeSession) List(w *imapserver.ListWriter, ref string, patterns []string, options *imapv2.ListOptions) error {
+	for _, f := range fakeFolderTemplate {
+		if err := w.WriteList(f); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -267,6 +285,45 @@ func TestIntegration_TestConnection_WrongPassword(t *testing.T) {
 	c := New(account.ConnectionConfig{Host: host, Port: port, TLSMode: account.TLSModeNone}, testUsername, "wrong")
 	if err := c.TestConnection(context.Background()); err == nil {
 		t.Fatal("TestConnection() error = nil, want error for wrong password")
+	}
+}
+
+// TestIntegration_ListFolders proves IMAP LIST is wired end to end:
+// every mailbox comes back with its delimiter/attributes, and the
+// result is sorted by name regardless of the server's response order
+// (PLAN-FOLDERS.md §3.3).
+func TestIntegration_ListFolders(t *testing.T) {
+	host, port := startTestServer(t)
+	c := New(account.ConnectionConfig{Host: host, Port: port, TLSMode: account.TLSModeNone}, testUsername, testPassword)
+
+	folders, err := c.ListFolders(context.Background())
+	if err != nil {
+		t.Fatalf("ListFolders() error = %v", err)
+	}
+	names := make([]string, len(folders))
+	for i, f := range folders {
+		names[i] = f.Name
+	}
+	want := []string{"INBOX", "NoDelimiter", "[Gmail]", "[Gmail]/Surat Terkirim"}
+	if !slices.Equal(names, want) {
+		t.Fatalf("ListFolders() names = %v, want %v (sorted by name)", names, want)
+	}
+
+	byName := make(map[string]mailer.Folder, len(folders))
+	for _, f := range folders {
+		byName[f.Name] = f
+	}
+	if got := byName["INBOX"].Delimiter; got != "/" {
+		t.Errorf("INBOX delimiter = %q, want %q", got, "/")
+	}
+	if got := byName["NoDelimiter"].Delimiter; got != "" {
+		t.Errorf("NoDelimiter delimiter = %q, want \"\" (server reported NIL)", got)
+	}
+	if attrs := byName["[Gmail]/Surat Terkirim"].Attributes; !slices.Contains(attrs, `\Sent`) {
+		t.Errorf("[Gmail]/Surat Terkirim attributes = %v, want to contain \\Sent", attrs)
+	}
+	if attrs := byName["[Gmail]"].Attributes; !slices.Contains(attrs, `\Noselect`) {
+		t.Errorf("[Gmail] attributes = %v, want to contain \\Noselect", attrs)
 	}
 }
 

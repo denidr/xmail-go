@@ -4,7 +4,10 @@
 // protocol package. See PLAN.md §1.
 package mailer
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Attachment is a file attached to an outgoing message.
 type Attachment struct {
@@ -81,6 +84,30 @@ type Fetcher interface {
 type Checker interface {
 	Check(ctx context.Context, folder string) (unread int, err error)
 }
+
+// Folder is one mailbox on the server, as reported by IMAP LIST. It is
+// serialized directly (no separate DTO) by both GET /accounts/{id}/folders
+// and the list_folders MCP tool — like Message, keeping the JSON tags
+// snake_case here keeps both skins consistent (see internal/api/dto.go).
+type Folder struct {
+	Name string `json:"name"`
+	// Delimiter is "" when the server reports NIL — a rune that isn't set
+	// must serialize as absent, not as \u0000.
+	Delimiter  string   `json:"delimiter,omitempty"`
+	Attributes []string `json:"attributes,omitempty"` // e.g. `\Sent`, `\HasNoChildren`, `\Noselect`
+}
+
+// FolderLister lists the mailboxes available on a server (implemented by
+// mailer/imap; POP3 has no folders, so it does not implement this).
+type FolderLister interface {
+	ListFolders(ctx context.Context) ([]Folder, error)
+}
+
+// ErrFolderNotFound marks a mailbox that does not exist on the server,
+// so account.Service can map it to a caller error (400) instead of a
+// server error (500). Protocol packages wrap it; nothing above mailer
+// needs to know how a given protocol detects it.
+var ErrFolderNotFound = errors.New("mailer: folder not found")
 
 // Marker marks a message as read (implemented by mailer/imap via the
 // IMAP \Seen flag; POP3 has no per-message flag concept, see

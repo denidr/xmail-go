@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -133,13 +134,176 @@ func (m mockSender) Send(ctx context.Context, msg mailer.OutgoingMessage) error 
 func (m mockSender) TestConnection(ctx context.Context) error                   { return m.err }
 
 // mockFetcher is a test double for mailer.Fetcher (fetch-only
-// protocols, i.e. imap/pop3's branch of TestConnection).
-type mockFetcher struct{ err error }
+// protocols, i.e. imap/pop3's branch of TestConnection). fetchErr, when
+// set, is what Fetch returns (used to exercise folder-error mapping).
+type mockFetcher struct {
+	err      error
+	fetchErr error
+}
 
 func (m mockFetcher) Fetch(ctx context.Context, folder string, limit, offset int) ([]mailer.Message, error) {
-	return nil, nil
+	return nil, m.fetchErr
 }
 func (m mockFetcher) TestConnection(ctx context.Context) error { return m.err }
+
+// mockMarkerFetcher is a Fetcher that also implements mailer.Marker —
+// like the real IMAP client — so MarkRead's folder-error path can be
+// exercised.
+type mockMarkerFetcher struct{ markErr error }
+
+func (m mockMarkerFetcher) Fetch(ctx context.Context, folder string, limit, offset int) ([]mailer.Message, error) {
+	return nil, nil
+}
+func (m mockMarkerFetcher) TestConnection(ctx context.Context) error { return nil }
+func (m mockMarkerFetcher) MarkRead(ctx context.Context, folder, uid string) error {
+	return m.markErr
+}
+
+// mockFolderLister is a test double for mailer.FolderLister.
+type mockFolderLister struct {
+	folders []mailer.Folder
+	err     error
+}
+
+func (m mockFolderLister) ListFolders(ctx context.Context) ([]mailer.Folder, error) {
+	return m.folders, m.err
+}
+
+func registerIMAPFolderLister(svc *Service, fn func(cfg ConnectionConfig, username, secret string) mailer.FolderLister) {
+	svc.RegisterProtocol(ProtocolIMAP, Protocol{FolderLister: fn})
+}
+
+// TestService_ListFolders locks in the dispatch: ListFolders builds the
+// registered FolderLister with the account's username/secret and hands
+// its result back unchanged (defaulting an empty protocol to imap).
+func TestService_ListFolders(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	want := []mailer.Folder{
+		{Name: "INBOX", Delimiter: "/"},
+		{Name: "[Gmail]/Surat Terkirim", Delimiter: "/", Attributes: []string{`\Sent`}},
+	}
+	var gotUser, gotSecret string
+	registerIMAPFolderLister(svc, func(cfg ConnectionConfig, username, secret string) mailer.FolderLister {
+		gotUser, gotSecret = username, secret
+		return mockFolderLister{folders: want}
+	})
+
+	got, err := svc.ListFolders(ctx, created.ID, "")
+	if err != nil {
+		t.Fatalf("ListFolders() error = %v", err)
+	}
+	if len(got) != 2 || got[1].Name != "[Gmail]/Surat Terkirim" {
+		t.Errorf("ListFolders() = %+v, want %+v", got, want)
+	}
+	if gotUser != "test@example.com" || gotSecret != "s3cret" {
+		t.Errorf("folder lister constructor got (%q, %q), want (test@example.com, s3cret)", gotUser, gotSecret)
+	}
+}
+
+// TestService_ListFolders_ProtocolWithoutFolders: POP3 only has INBOX
+// and SMTP has no mailbox at all, so both are a caller error (400),
+// not a server error (PLAN-FOLDERS.md §2/§3.4).
+func TestService_ListFolders_ProtocolWithoutFolders(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+
+	acct := sampleAccount()
+	acct.POP3 = &ConnectionConfig{Host: "pop.example.com", Port: 995, TLSMode: TLSModeTLS}
+	created, err := svc.Create(ctx, acct, "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	// Register both protocols so the failure is specifically "no
+	// FolderLister", not "protocol not registered".
+	registerPOP3(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher { return mockFetcher{} })
+	registerSMTP(svc, func(cfg ConnectionConfig, fromAddress, username, secret string) mailer.Sender { return mockSender{} })
+
+	if _, err := svc.ListFolders(ctx, created.ID, "pop3"); !errors.Is(err, ErrValidation) {
+		t.Errorf("ListFolders(pop3) error = %v, want ErrValidation", err)
+	}
+	if _, err := svc.ListFolders(ctx, created.ID, "smtp"); !errors.Is(err, ErrValidation) {
+		t.Errorf("ListFolders(smtp) error = %v, want ErrValidation", err)
+	}
+}
+
+func TestService_ListFolders_UnknownAccount(t *testing.T) {
+	svc := newTestService(t)
+	if _, err := svc.ListFolders(context.Background(), "does-not-exist", "imap"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ListFolders(unknown account) error = %v, want ErrNotFound", err)
+	}
+}
+
+// TestService_FolderNotFoundIsValidation locks in the deliberate
+// behavior change (PLAN-FOLDERS.md §3.8): a mailbox that does not exist
+// is a caller error (ErrValidation -> HTTP 400), not a server error.
+func TestService_FolderNotFoundIsValidation(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcher{fetchErr: fmt.Errorf("imap: select %q: %w", "Nope", mailer.ErrFolderNotFound)}
+	})
+
+	if _, err := svc.FetchMessages(ctx, created.ID, "imap", "Nope", 10, 0, false); !errors.Is(err, ErrValidation) {
+		t.Errorf("FetchMessages() error = %v, want ErrValidation", err)
+	}
+	if _, _, err := svc.CheckNew(ctx, created.ID, "imap", "Nope"); !errors.Is(err, ErrValidation) {
+		t.Errorf("CheckNew() error = %v, want ErrValidation", err)
+	}
+}
+
+func TestService_MarkReadFolderNotFoundIsValidation(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockMarkerFetcher{markErr: fmt.Errorf("imap: select %q: %w", "Nope", mailer.ErrFolderNotFound)}
+	})
+
+	if err := svc.MarkRead(ctx, created.ID, "imap", "Nope", "1"); !errors.Is(err, ErrValidation) {
+		t.Errorf("MarkRead() error = %v, want ErrValidation", err)
+	}
+}
+
+// TestService_FetchMessages_ServerErrorStaysServerError is the guard
+// against over-classifying: only a missing mailbox is the caller's
+// fault, so a dial failure must not become a 400.
+func TestService_FetchMessages_ServerErrorStaysServerError(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t)
+
+	created, err := svc.Create(ctx, sampleAccount(), "s3cret")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	wantErr := errors.New("imap: connect: dial tcp: connection refused")
+	registerIMAP(svc, func(cfg ConnectionConfig, username, secret string) mailer.Fetcher {
+		return mockFetcher{fetchErr: wantErr}
+	})
+
+	_, err = svc.FetchMessages(ctx, created.ID, "imap", "INBOX", 10, 0, false)
+	if errors.Is(err, ErrValidation) {
+		t.Errorf("FetchMessages() error = %v, want NOT ErrValidation (a dial failure is a server error)", err)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("FetchMessages() error = %v, want it to wrap %v", err, wantErr)
+	}
+}
 
 func TestService_Send_UsesAccountEmailAsFrom(t *testing.T) {
 	ctx := context.Background()

@@ -314,6 +314,7 @@ func TestSend_ValidatesRecipients(t *testing.T) {
 // endpoints without a real IMAP server.
 type mockIMAPClient struct {
 	fetchResult   []mailer.Message
+	fetchErr      error
 	fetchCalls    int
 	unread        int
 	markReadCalls []string
@@ -321,6 +322,9 @@ type mockIMAPClient struct {
 
 func (m *mockIMAPClient) Fetch(ctx context.Context, folder string, limit, offset int) ([]mailer.Message, error) {
 	m.fetchCalls++
+	if m.fetchErr != nil {
+		return nil, m.fetchErr
+	}
 	return m.fetchResult, nil
 }
 func (m *mockIMAPClient) TestConnection(ctx context.Context) error { return nil }

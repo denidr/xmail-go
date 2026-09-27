@@ -292,6 +292,54 @@ func (s *Service) resolveFetcher(ctx context.Context, accountID, protocol string
 	return p.Fetcher(*cfg, a.Username, secret), protocol, nil
 }
 
+// ListFolders returns the mailboxes available for an account's protocol.
+// Only protocols whose registration carries a FolderLister support this
+// — currently IMAP; POP3 (INBOX only) and SMTP (no mailbox at all)
+// return ErrValidation, consistent with how MarkRead rejects POP3.
+func (s *Service) ListFolders(ctx context.Context, accountID, protocol string) ([]mailer.Folder, error) {
+	if protocol == "" {
+		protocol = DefaultProtocol
+	}
+	a, err := s.repo.Get(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := connConfigForProtocol(a, protocol)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("%w: account has no %s configuration", ErrValidation, protocol)
+	}
+	p, err := s.protocolFor(protocol)
+	if err != nil {
+		return nil, err
+	}
+	if p.FolderLister == nil {
+		return nil, fmt.Errorf("%w: protocol %q has no folders", ErrValidation, protocol)
+	}
+	secret, err := s.repo.Secret(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return p.FolderLister(*cfg, a.Username, secret).ListFolders(ctx)
+}
+
+// domainError maps a protocol-level error to a caller error when the
+// failure was actually the caller's input. The one such case is a
+// mailbox that does not exist (mailer.ErrFolderNotFound) -> ErrValidation
+// (HTTP 400) instead of a server error (500). Everything else — dial
+// failures, auth errors, timeouts, other IMAP errors — passes through
+// unchanged, so a real server problem is never disguised as bad input
+// (see PLAN-FOLDERS.md §3.8). Keeping the mapping here (rather than in
+// internal/api or internal/mcpserver) means both skins classify alike.
+func domainError(err error) error {
+	if errors.Is(err, mailer.ErrFolderNotFound) {
+		return fmt.Errorf("%w: %s", ErrValidation, err)
+	}
+	return err
+}
+
 // FetchMessages returns up to limit messages (skipping offset) for
 // protocol ("imap" or "pop3") + folder on the given account. limit <= 0
 // falls back to DefaultFetchLimit (single source of truth for both the
@@ -333,7 +381,7 @@ func (s *Service) FetchMessages(ctx context.Context, accountID, protocol, folder
 
 	msgs, err := fetcher.Fetch(ctx, folder, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("account: fetch: %w", err)
+		return nil, domainError(fmt.Errorf("account: fetch: %w", err))
 	}
 	if err := s.cache.Upsert(ctx, key, msgs, offset); err != nil {
 		return nil, err
@@ -358,7 +406,7 @@ func (s *Service) CheckNew(ctx context.Context, accountID, protocol, folder stri
 	if checker, ok := fetcher.(mailer.Checker); ok {
 		unread, err = checker.Check(ctx, folder)
 		if err != nil {
-			return 0, 0, fmt.Errorf("account: check: %w", err)
+			return 0, 0, domainError(fmt.Errorf("account: check: %w", err))
 		}
 	}
 
@@ -369,7 +417,7 @@ func (s *Service) CheckNew(ctx context.Context, accountID, protocol, folder stri
 	}
 	msgs, err := fetcher.Fetch(ctx, folder, defaultCheckFetchLimit, 0)
 	if err != nil {
-		return 0, 0, fmt.Errorf("account: fetch for check: %w", err)
+		return 0, 0, domainError(fmt.Errorf("account: fetch for check: %w", err))
 	}
 	for _, m := range msgs {
 		if !existing[m.UID] {
@@ -405,7 +453,7 @@ func (s *Service) MarkRead(ctx context.Context, accountID, protocol, folder, uid
 		return fmt.Errorf("%w: protocol %q does not support marking messages as read", ErrValidation, protocol)
 	}
 	if err := marker.MarkRead(ctx, folder, uid); err != nil {
-		return fmt.Errorf("account: mark read: %w", err)
+		return domainError(fmt.Errorf("account: mark read: %w", err))
 	}
 	return s.cache.MarkRead(ctx, CacheKey{AccountID: accountID, Protocol: protocol, Folder: folder}, uid)
 }

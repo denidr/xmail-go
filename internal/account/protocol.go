@@ -28,6 +28,9 @@ const (
 type Protocol struct {
 	Sender  func(cfg ConnectionConfig, fromAddress, username, secret string) mailer.Sender
 	Fetcher func(cfg ConnectionConfig, username, secret string) mailer.Fetcher
+	// FolderLister is nil for a protocol with no folder concept (SMTP has
+	// no mailbox at all; POP3 only has INBOX) — see Service.ListFolders.
+	FolderLister func(cfg ConnectionConfig, username, secret string) mailer.FolderLister
 }
 
 // testConn is the TestConnection method shared by mailer.Sender and

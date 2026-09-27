@@ -1,5 +1,6 @@
 // Package mcpserver exposes xmail's account/mailer capabilities as MCP
-// tools (list_accounts, send_email, fetch_emails, check_new_emails),
+// tools (list_accounts, send_email, fetch_emails, check_new_emails,
+// list_folders),
 // so MCP clients (Claude Desktop, Claude Code, etc.) can use them
 // directly. Delegates to the same account.Service used by internal/api
 // — no duplicated business logic. See PLAN.md §4, Fase 5.
@@ -25,6 +26,7 @@ const (
 	toolSendEmail      = "send_email"
 	toolFetchEmails    = "fetch_emails"
 	toolCheckNewEmails = "check_new_emails"
+	toolListFolders    = "list_folders"
 )
 
 // Server wraps the MCP server instance and its tool handlers.
@@ -33,7 +35,7 @@ type Server struct {
 	service *account.Service
 }
 
-// New builds a Server with all 4 tools registered (see PLAN.md §4).
+// New builds a Server with all 5 tools registered (see PLAN.md §4).
 // version is reported to MCP clients during the initialize handshake —
 // callers pass the same build-time-stamped version used everywhere
 // else (see cmd/xmail's and cmd/xmail-tray's `version` var, set via
@@ -113,6 +115,15 @@ func (s *Server) registerTools() {
 			mcp.WithString("folder", mcp.Description("Mailbox folder (IMAP only). Defaults to \"INBOX\".")),
 		),
 		mcp.NewTypedToolHandler(s.handleCheckNewEmails),
+	)
+
+	s.mcp.AddTool(
+		mcp.NewTool(toolListFolders,
+			mcp.WithDescription("List the mailboxes (folders) available on an account's IMAP server, with their delimiter and attributes (e.g. \\Sent). Use this to discover exact folder names before fetching."),
+			mcp.WithString("account_id", mcp.Required(), mcp.Description("ID of the account to list folders for (see list_accounts).")),
+			mcp.WithString("protocol", mcp.Description("Only \"imap\" supports folders. Defaults to \"imap\".")),
+		),
+		mcp.NewTypedToolHandler(s.handleListFolders),
 	)
 }
 
@@ -222,4 +233,25 @@ func (s *Server) handleCheckNewEmails(ctx context.Context, req mcp.CallToolReque
 	// The same account.CheckResult REST serializes (see internal/api) —
 	// one shared shape for both skins.
 	return mcp.NewToolResultStructuredOnly(account.CheckResult{Unread: unread, New: newCount}), nil
+}
+
+type listFoldersArgs struct {
+	AccountID string `json:"account_id"`
+	Protocol  string `json:"protocol,omitempty"`
+}
+
+func (s *Server) handleListFolders(ctx context.Context, req mcp.CallToolRequest, args listFoldersArgs) (*mcp.CallToolResult, error) {
+	if args.AccountID == "" {
+		return mcp.NewToolResultError("account_id is required"), nil
+	}
+
+	folders, err := s.service.ListFolders(ctx, args.AccountID, args.Protocol)
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr(toolListFolders+" failed", err), nil
+	}
+	// An empty folder list must reach the client as [], not null (same as REST).
+	if folders == nil {
+		folders = []mailer.Folder{}
+	}
+	return mcp.NewToolResultStructuredOnly(folders), nil
 }

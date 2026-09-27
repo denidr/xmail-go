@@ -25,6 +25,24 @@ func queryBool(r *http.Request, key string) bool {
 	return v == "1" || v == "true"
 }
 
+// handleFoldersList implements GET /accounts/{id}/folders?protocol=imap
+// (see PLAN-FOLDERS.md §3.5). No DTO: []mailer.Folder serializes
+// directly, and nil is normalized to [] like handleMessagesList.
+func (s *Server) handleFoldersList(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	protocol := r.URL.Query().Get("protocol")
+
+	folders, err := s.service.ListFolders(r.Context(), id, protocol)
+	if err != nil {
+		writeErrFor(w, err)
+		return
+	}
+	if folders == nil {
+		folders = []mailer.Folder{}
+	}
+	writeData(w, http.StatusOK, folders)
+}
+
 // handleMessagesList implements GET /accounts/{id}/messages (see
 // PLAN.md §3): ?folder=INBOX&limit=20&offset=0&protocol=imap&refresh=true
 //
