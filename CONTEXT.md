@@ -27,6 +27,10 @@ _Avoid_: email, mail item
 A named mailbox on the server. IMAP has many; POP3 has none, so its only Folder is INBOX.
 _Avoid_: directory, label
 
+**Folder list**:
+The live, uncached set of an account's IMAP mailboxes — each Folder's name, delimiter, and attributes (role hints like `\Sent`). It is how a caller learns the exact names the server accepts instead of guessing. Only IMAP has one: asking POP3 (whose only Folder stays INBOX) or SMTP is a validation error.
+_Avoid_: folder tree, directory listing
+
 **Fetch window**:
 A slice of a mailbox's messages, newest-first: the most recent N, skipping the first M.
 _Avoid_: page, offset/limit

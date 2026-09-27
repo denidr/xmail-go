@@ -12,9 +12,9 @@ These five rules explain almost every structural decision in the codebase. Under
 
 1. **One behavior, three entrypoints.** `internal/app.Run(ctx, cfg) error` is the *only* place that wires storage → account service → mailer implementations → API server → MCP server and starts serving. `cmd/xmail/main.go` (headless/Docker) and `cmd/xmail-tray/main.go` (Windows tray+service) both just call `app.Run`. Never put business logic in a `cmd/` package — it won't be shared across release targets.
 
-2. **Protocol logic is hidden behind interfaces, dispatched by `account.Service`.** `internal/mailer/types.go` defines `Sender`, `Fetcher`, `Checker`, `Marker`, `FetcherChecker`. `internal/mailer/{smtp,imap,pop3}` implement them. Nothing outside `internal/mailer/*` and `internal/app` ever imports a concrete protocol package — `internal/api` and `internal/mcpserver` only ever call `account.Service` methods. Adding a 4th protocol means: implement the interface and register it once via `Service.RegisterProtocol` in `internal/app.wireMailer` (see `internal/account/protocol.go`). Nothing else changes.
+2. **Protocol logic is hidden behind interfaces, dispatched by `account.Service`.** `internal/mailer/types.go` defines `Sender`, `Fetcher`, `Checker`, `Marker`, `FetcherChecker`, `FolderLister`. `internal/mailer/{smtp,imap,pop3}` implement them. Nothing outside `internal/mailer/*` and `internal/app` ever imports a concrete protocol package — `internal/api` and `internal/mcpserver` only ever call `account.Service` methods. Adding a 4th protocol means: implement the interface and register it once via `Service.RegisterProtocol` in `internal/app.wireMailer` (see `internal/account/protocol.go`). Nothing else changes.
 
-3. **REST and MCP are two skins over the same `account.Service`.** There is exactly one business-logic implementation of "send an email" / "fetch messages" / "check for new mail": `account.Service.Send` / `.FetchMessages` / `.CheckNew`. `internal/api`'s HTTP handlers and `internal/mcpserver`'s tool handlers are both thin adapters that parse their respective input format, call the same `Service` method, and format the response. If REST and MCP ever return different data for the same account, that's a bug in one of the two thin adapters, never in `Service`.
+3. **REST and MCP are two skins over the same `account.Service`.** There is exactly one business-logic implementation of "send an email" / "fetch messages" / "check for new mail" / "list folders": `account.Service.Send` / `.FetchMessages` / `.CheckNew` / `.ListFolders`. `internal/api`'s HTTP handlers and `internal/mcpserver`'s tool handlers are both thin adapters that parse their respective input format, call the same `Service` method, and format the response. If REST and MCP ever return different data for the same account, that's a bug in one of the two thin adapters, never in `Service`.
 
 4. **Domain models never leak secrets or internal detail across a boundary.** `account.Account` (domain) never has a plaintext password field — credentials live only in the `credentials` SQL table, encrypted, accessed via `Repository.Secret`. `internal/api/dto.go` defines separate request/response JSON shapes so a stray struct-literal typo can't accidentally serialize a password into an HTTP response (this is enforced by a test, see `TestAccountsCRUD_EndToEnd` in `internal/api/server_test.go`). `internal/mcpserver`'s `accountSummary` type does the same for MCP.
 
@@ -55,15 +55,16 @@ internal/
   account/model.go           Account, ConnectionConfig, TLSMode, CheckResult domain types (no credential field on Account)
   account/repository.go      Repository — SQL CRUD for accounts + credentials (encrypts/decrypts via cryptox)
   account/messages.go        MessageCache — CacheKey/Window + the store's only reader/writer: Get (coverage/verified-from-aware), Upsert, Record, ExistingUIDs, MarkRead. Owns the coverage/exhausted/verified-from state machine that decides cache-vs-dial (§3.3)
-  account/protocol.go        Protocol (per-protocol Sender/Fetcher constructors) + ProtocolSMTP/IMAP/POP3 names — what Service.RegisterProtocol stores (see §5.3, ADR 0001)
+  account/protocol.go        Protocol (per-protocol Sender/Fetcher/FolderLister constructors) + ProtocolSMTP/IMAP/POP3 names — what Service.RegisterProtocol stores (see §5.3, ADR 0001)
   account/service.go         Service — validation + protocol dispatch via the registered Protocol table (see §1 rule 2). THE business logic layer.
   account/repository_test.go, messages_test.go, service_test.go
 
-  mailer/types.go            Sender, Fetcher, Checker, Marker, FetcherChecker interfaces; OutgoingMessage, Message, Attachment structs; WindowRange + DefaultFolder helpers
+  mailer/types.go            Sender, Fetcher, Checker, Marker, FetcherChecker, FolderLister interfaces; OutgoingMessage, Message, Folder, Attachment structs; ErrFolderNotFound sentinel; WindowRange + DefaultFolder helpers
   mailer/types_test.go       WindowRange/DefaultFolder boundary table tests (no network)
   mailer/smtp/client.go      Sender impl via github.com/wneessen/go-mail
   mailer/smtp/client_test.go, integration_test.go (build tag: integration)
-  mailer/imap/client.go      FetcherChecker + Marker impl via github.com/emersion/go-imap/v2 (Fetch also pulls BODYSTRUCTURE for attachment names)
+  mailer/imap/client.go      FetcherChecker + Marker + FolderLister impl via github.com/emersion/go-imap/v2 (Fetch also pulls BODYSTRUCTURE for attachment names; classifyFolderErr maps a missing mailbox to mailer.ErrFolderNotFound)
+  mailer/imap/client_test.go folder-error classification unit tests (no network)
   mailer/imap/integration_test.go (build tag: integration)
   mailer/pop3/client.go      Fetcher impl via github.com/knadh/go-pop3 (no Checker/Marker — POP3 has no unseen-flag or per-message-flag concept)
   mailer/pop3/integration_test.go (build tag: integration)
@@ -74,15 +75,16 @@ internal/
   api/dto.go                  Request/response JSON shapes, separate from account.Account (see §1 rule 4)
   api/accounts_handler.go     POST/GET/PUT/DELETE /accounts, POST /accounts/{id}/test-connection
   api/send_handler.go         POST /accounts/{id}/send
-  api/messages_handler.go     GET /accounts/{id}/messages (cache-first, ?refresh=true forces live), POST /accounts/{id}/check, POST /accounts/{id}/messages/read
+  api/messages_handler.go     GET /accounts/{id}/messages (cache-first, ?refresh=true forces live), GET /accounts/{id}/folders (IMAP folder list), POST /accounts/{id}/check, POST /accounts/{id}/messages/read
   api/server_test.go          httptest-based contract tests (real Service + real sqlite temp file, not mocked)
+  api/folders_test.go         GET /folders contract tests (200/400/404) + the 500→400 folder-not-found regression
   api/dashboard_test.go       auth-boundary tests: dashboard assets are public, every /accounts + /mcp route still 401s without a key (§3.5)
 
   dashboard/dashboard.go      Handler() — embeds assets/ and serves them via http.FileServerFS; sets CSP/nosniff/no-cache
   dashboard/assets/           index.html + app.js + style.css — the account-management UI (vanilla, no build step, no npm)
   dashboard/dashboard_test.go asset-integrity tests: index.html references only embedded files and uses no inline script/style/CSP-blocked constructs
 
-  mcpserver/server.go         Server — wraps mark3labs/mcp-go, registers 4 tools, all calling the same account.Service methods as internal/api
+  mcpserver/server.go         Server — wraps mark3labs/mcp-go, registers 5 tools (list_accounts, send_email, fetch_emails, check_new_emails, list_folders), all calling the same account.Service methods as internal/api
   mcpserver/server_test.go
 
   winservice/service.go       (build tag: windows,xmailtray) kardianos/service wrapper — Install/Uninstall/Start/Stop as a native Windows Service. buildServiceConfig sets EnvVars and absolutizes XMAIL_DB_PATH (see PLAN.md §10.6 #19 and §10.7 #26/#27 — without these an installed service could never start, or would resolve a relative DB path under the SCM's working directory)
@@ -138,6 +140,14 @@ Marking a message read (`POST /accounts/{id}/messages/read`) goes through `Servi
 
 The assets are unauthenticated *by design* — a page's own HTML/CSS/JS requests cannot carry a header, and they hold no secrets; the reasoning and the rejected alternatives are in `docs/adr/0002-dashboard-serving-and-auth.md`.
 
+### 3.6 `GET /accounts/{id}/folders` and `list_folders` (MCP)
+
+1. `internal/api/server.go` routes to `handleFoldersList` (`internal/api/messages_handler.go`); MCP's `handleListFolders` (`internal/mcpserver/server.go`) is the sibling. Both call `s.service.ListFolders(ctx, id, protocol)`.
+2. `account.Service.ListFolders` (`internal/account/service.go`): defaults an empty `protocol` to `DefaultProtocol`, loads the `Account` + `ConnConfig`, looks up the registered `Protocol.FolderLister` (`internal/account/protocol.go` — only IMAP registers one; see ADR 0001), and calls `.ListFolders(ctx)` on it. A protocol with no folder concept (`pop3`, `smtp`) is `ErrValidation` (400).
+3. `imap.Client.ListFolders` (`internal/mailer/imap/client.go`) dials, runs one `LIST "" "*"` (nil options — safe on every server), maps each `ListData` → `mailer.Folder` (delimiter NIL → `""`, attributes passed through), and sorts by name so REST and MCP return identical order. There is no cache: it always goes live (PLAN-FOLDERS.md §2).
+4. Handler normalizes a nil slice to `[]` and writes it directly — no DTO, like `Message` (`mailer.Folder` carries no secret).
+5. Separately, when a folder named in `Fetch`/`Check`/`MarkRead` does not exist, `imap.classifyFolderErr` turns the IMAP status response into `mailer.ErrFolderNotFound`, and `Service.domainError` maps that to `ErrValidation` (400) — so a bad folder is a caller error, not a 500 (PLAN-FOLDERS.md §3.8).
+
 ## 4. Data Model
 
 `internal/storage/migrations/0001_init.sql` is the single source of truth; summary:
@@ -170,12 +180,12 @@ Concrete recipes for the changes an agent is most likely to be asked to make.
 
 1. Define an `xxxArgs struct` with `json` tags in `internal/mcpserver/server.go`.
 2. Register it in `registerTools()`: `s.mcp.AddTool(mcp.NewTool("tool_name", mcp.WithDescription(...), mcp.WithString(...)/mcp.WithArray(...)/mcp.WithNumber(...) for each field), mcp.NewTypedToolHandler(s.handleXxx))`. Declare the schema explicitly (don't use `mcp.WithInputSchema[T]()` — see PLAN.md Fase 5 notes for why this codebase avoids it).
-3. Write `handleXxx(ctx context.Context, req mcp.CallToolRequest, args xxxArgs) (*mcp.CallToolResult, error)` — validate required args manually (return `mcp.NewToolResultError("...")`, not a Go `error`, for user-facing validation failures — see existing handlers), call the matching `account.Service` method, return `mcp.NewToolResultStructuredOnly(result)`.
+3. Write `handleXxx(ctx context.Context, req mcp.CallToolRequest, args xxxArgs) (*mcp.CallToolResult, error)` — validate required args manually (return `mcp.NewToolResultError("...")`, not a Go `error`, for user-facing validation failures — see existing handlers), call the matching `account.Service` method, return `mcp.NewToolResultStructuredOnly(result)` (normalizing a nil slice to `[]`, as `fetch_emails`/`list_folders` do).
 4. Add a unit test in `internal/mcpserver/server_test.go` calling the handler function directly (see existing tests for the mock pattern). If the tool takes arguments, also add/refresh a transport-level test through the real JSON-RPC binding — `TestTransport_SendEmailBindsArguments` does this with an in-process MCP client against `Server.HTTPHandler()`, because `mcp.NewTypedToolHandler`'s `BindArguments` call is a real code path that direct-call unit tests skip (see §7 and PLAN.md Fase 8 crosscheck notes).
 
 ### 5.3 Add a new mailer protocol (e.g. JMAP)
 
-1. Create `internal/mailer/jmap/client.go`. Implement whichever of `mailer.Sender`/`Fetcher`/`Checker` make sense (see `internal/mailer/types.go`) — follow `internal/mailer/imap/client.go` as the fullest example (implements both `Fetcher` and `Checker`).
+1. Create `internal/mailer/jmap/client.go`. Implement whichever of `mailer.Sender`/`Fetcher`/`Checker`/`Marker`/`FolderLister` make sense (see `internal/mailer/types.go`) — follow `internal/mailer/imap/client.go` as the fullest example (implements `Fetcher`, `Checker`, `Marker` and `FolderLister`). A capability the protocol lacks is simply left unimplemented; `account.Service` degrades it to `ErrValidation` (400) rather than a panic (as `MarkRead` and `ListFolders` do for POP3).
 2. Register it in `internal/app.wireMailer` with one `account.Service.RegisterProtocol(name, account.Protocol{...})` call carrying the constructors for whichever capabilities it supports (see `internal/account/protocol.go`; ADR 0001). That is the whole wiring — no new factory type or setter on `Service`.
 3. If it needs its own `ConnectionConfig`-like fields on `Account`, extend `internal/account/model.go` and the `accounts` table (new migration, §4) and `internal/api/dto.go`, and add its name/constant + case to `internal/account/protocol.go` and `connConfigForProtocol`.
 4. Write unit tests (TLS-mode mapping, no network) + an integration test with a fake/in-process server (build tag `integration` — see `internal/mailer/{smtp,imap,pop3}/integration_test.go` for three different fake-server strategies depending on library availability).
@@ -247,6 +257,8 @@ Full strategy (unit/integration/contract/race pyramid, coverage philosophy) is i
 | An MCP tool end-to-end through the real JSON-RPC transport | `internal/mcpserver/server_test.go`, no build tag — in-process MCP client (`mcp-go/client`) against `Server.HTTPHandler()` | `TestTransport_SendEmailBindsArguments` — added so a tool's argument binding can't silently regress. A live `curl` against `/mcp` is still worth doing when a tool's *schema* changes (see PLAN.md Fase 8 "crosscheck" notes for the exact sequence) |
 | The dashboard's auth boundary (assets public, `/accounts`+`/mcp` still 401) | `internal/api/dashboard_test.go`, no build tag | `TestDashboard_APIStillRequiresKey`, `TestDashboard_AssetsServedWithoutAPIKey` |
 | The dashboard's embedded assets (referenced files exist, no CSP-blocked inline markup) | `internal/dashboard/dashboard_test.go`, no build tag | `TestIndexReferencesExistingAssets`, `TestIndexHasNoInlineScriptOrStyle` |
+| IMAP folder-error classification (`ResponseCodeNonExistent` → `mailer.ErrFolderNotFound`; other codes untouched) | `internal/mailer/imap/client_test.go`, no build tag — construct `&imapv2.Error{...}`, no network | `TestClassifyFolderErr_NonExistent`, `..._OtherCodeUnchanged` |
+| `ListFolders` mapping (`ListData` → `Folder`: delimiter NIL, attributes, deterministic sort) + the `/folders` endpoint (200/400/404, `[]` not `null`) and the 500→400 folder-not-found regression | `internal/mailer/imap/integration_test.go` (fake `imapserver` LIST handler) and `internal/api/folders_test.go` | `TestIntegration_ListFolders`, `TestFoldersList_*`, `TestMessagesList_FolderNotFoundIs400` |
 
 `app.js` has **no automated test** — the repo deliberately has no JS test runner (stdlib Go only). It is covered by the manual checklist in PLAN-DASHBOARD.md §5 (open the dashboard against a running server on Docker and on the Windows tray build). If the JS grows past the account screens, revisit that gap rather than adding a runner speculatively.
 

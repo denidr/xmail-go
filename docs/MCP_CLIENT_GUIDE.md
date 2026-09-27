@@ -1,8 +1,8 @@
 # xmail — Panduan MCP Client
 
-Panduan lengkap menghubungkan **MCP client** (Claude Code, Claude Desktop, Cursor, atau agent/custom client) ke xmail, sehingga agent dapat memakai tool email (`list_accounts`, `send_email`, `fetch_emails`, `check_new_emails`) langsung dari percakapan.
+Panduan lengkap menghubungkan **MCP client** (Claude Code, Claude Desktop, Cursor, atau agent/custom client) ke xmail, sehingga agent dapat memakai tool email (`list_accounts`, `send_email`, `fetch_emails`, `check_new_emails`, `list_folders`) langsung dari percakapan.
 
-Implementasi: `internal/mcpserver/server.go` (library `github.com/mark3labs/mcp-go`). Keempat tool tersebut **memanggil `account.Service` yang sama** dengan REST API — jadi MCP dan REST tidak bisa berbeda data (satu sumber logika). Lihat [`ARCHITECTURE.md §1`](../ARCHITECTURE.md).
+Implementasi: `internal/mcpserver/server.go` (library `github.com/mark3labs/mcp-go`). Kelima tool tersebut **memanggil `account.Service` yang sama** dengan REST API — jadi MCP dan REST tidak bisa berbeda data (satu sumber logika). Lihat [`ARCHITECTURE.md §1`](../ARCHITECTURE.md).
 
 - Referensi REST API: [`docs/API.md`](./API.md).
 - Kontrak tool ringkas: [`PLAN.md §4`](../PLAN.md).
@@ -35,7 +35,7 @@ Implementasi: `internal/mcpserver/server.go` (library `github.com/mark3labs/mcp-
                                                    ▼
                  ┌─────────────────────────────┐  ┌────────────────────┐
    MCP client ──▶│  internal/mcpserver         │─▶│  account.Service   │
-   (HTTP /mcp    │  (tools: 4)                 │  │  (satu logika)      │
+   (HTTP /mcp    │  (tools: 5)                 │  │  (satu logika)      │
     atau stdio)  └─────────────────────────────┘  └─────────┬──────────┘
                                                             │
                                     ┌───────────────────────┼───────────────────┐
@@ -370,6 +370,8 @@ Response (disederhanakan; lihat [bagian 8](#8-referensi-tool-schema--output) unt
       { "name": "fetch_emails", "description": "Fetch recent emails from an account's mailbox (IMAP or POP3).",
         "inputSchema": { "type": "object", "properties": { "...": {} }, "required": ["account_id"] } },
       { "name": "check_new_emails", "description": "Check unread/new email counts for an account without downloading messages.",
+        "inputSchema": { "type": "object", "properties": { "...": {} }, "required": ["account_id"] } },
+      { "name": "list_folders", "description": "List the mailboxes (folders) available on an account's IMAP server, with their delimiter and attributes (e.g. \\Sent). Use this to discover exact folder names before fetching.",
         "inputSchema": { "type": "object", "properties": { "...": {} }, "required": ["account_id"] } }
     ]
   }
@@ -444,6 +446,15 @@ Response sukses memuat `content` (teks JSON cadangan) **dan** `structuredContent
 
 `structuredContent`: `{ "unread_count": 5, "new_count": 2 }`.
 
+**`list_folders`**:
+
+```json
+{ "jsonrpc":"2.0","id":7,"method":"tools/call",
+  "params": { "name":"list_folders","arguments":{ "account_id":"3f2b..." } } }
+```
+
+`structuredContent`: array `Folder` (`{name, delimiter?, attributes?}`), diurutkan berdasarkan nama.
+
 ## 8. Referensi tool (schema + output)
 
 Semua tool memakai `inputSchema` bertipe object. Field tanpa `"required"` bersifat opsional.
@@ -495,6 +506,16 @@ Input schema:
 | `folder` | string | tidak | `INBOX` |
 
 - **Output:** `{ unread_count, new_count }` (sama dengan REST `POST /accounts/{id}/check`).
+
+### 8.5 `list_folders`
+
+| Field | Tipe | Wajib | Default | Deskripsi |
+|---|---|---|---|:---:|
+| `account_id` | string | ya | | ID akun |
+| `protocol` | string | tidak | `imap` | hanya `"imap"` yang mendukung folder |
+
+- **Output:** array `Folder` (`{name, delimiter?, attributes?}`), diurutkan berdasarkan nama.
+- **Catatan:** selalu live ke server (tidak di-cache). `attributes` memuat peran folder (mis. `\Sent`, `\Drafts`) sehingga agent bisa memetakan folder penting sendiri tanpa menebak nama. POP3/SMTP → `isError: true` ("protocol ... has no folders"). Sama dengan REST `GET /accounts/{id}/folders`.
 
 ## 9. Error handling
 
@@ -549,6 +570,7 @@ Alternatif tanpa Inspector: gunakan `curl` (bagian 4.4 / 7) atau contoh Go (bagi
 | `send_email` | `POST /accounts/{id}/send` (tanpa attachment) |
 | `fetch_emails` | `GET /accounts/{id}/messages` (tanpa `offset`, tanpa `folder` pada POP3) |
 | `check_new_emails` | `POST /accounts/{id}/check` |
+| `list_folders` | `GET /accounts/{id}/folders` |
 
 Karena keduanya memanggil `account.Service` yang sama, perbedaan hanya pada bentuk input/output dan fitur yang sengaja tidak diekspos (attachment & offset di MCP).
 
@@ -560,6 +582,7 @@ Karena keduanya memanggil `account.Service` yang sama, perbedaan hanya pada bent
 - `fetch_emails` cache-first; pakai `refresh=true` untuk menjamin data live.
 - POP3: folder selalu `INBOX`, `is_read` selalu `true`, `attachments` kosong, `unread_count` = 0.
 - Mark-as-read tidak diekspos sebagai tool MCP (hanya REST `POST /accounts/{id}/messages/read`).
+- `list_folders` hanya untuk IMAP; POP3/SMTP membalas `isError: true` ("protocol ... has no folders"). Folder selalu live, tidak di-cache.
 - Produsen versi: `serverInfo.version` mengikuti versi build xmail.
 - "xmail sebagai MCP **client**" (xmail memanggil MCP server lain) **belum ada** — masih backlog (PLAN.md Fase 9). Yang ada saat ini adalah xmail sebagai MCP **server**.
 

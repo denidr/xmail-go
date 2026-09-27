@@ -6,24 +6,26 @@ Dokumen lengkap:
 - [PRD.MD](./PRD.MD) — requirement produk, scope, non-goals.
 - [PLAN.md](./PLAN.md) — rencana implementasi teknis: struktur project, skema DB, kontrak API/MCP, urutan kerja per fase, histori keputusan.
 - [PLAN-DASHBOARD.md](./PLAN-DASHBOARD.md) — rencana terpisah untuk fitur dashboard web manajemen akun (CRUD akun + uji konektivitas; PRD.MD §6.7).
+- [PLAN-FOLDERS.md](./PLAN-FOLDERS.md) — rencana terpisah untuk daftar folder IMAP (`GET /accounts/{id}/folders`, tool MCP `list_folders`) dan klasifikasi error folder (500 → 400).
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — **referensi teknis codebase saat ini**: apa isinya, bagaimana kerjanya, dan cara menambah fitur. Ditulis supaya cepat dipahami manusia maupun LLM agent yang akan mengerjakan repo ini — mulai dari sini kalau mau langsung ubah/tambah kode.
 - [CODE_REVIEW.md](./CODE_REVIEW.md) — arsip hasil code review independen; resolusinya (fix apa untuk temuan apa) dicatat di PLAN.md §10.
 - [CONTEXT.md](./CONTEXT.md) — glosarium domain: istilah inti (Account, Message, Message cache, Coverage, Exhausted, Fetch window, dst) beserta istilah yang dihindari.
 - [docs/adr/](./docs/adr/) — Architecture Decision Records: keputusan arsitektur beserta alasannya (mulai dari ADR-0001 soal penyatuan dispatch protokol).
 - [docs/API.md](./docs/API.md) — **referensi REST API**: base URL & auth, envelope response, semua endpoint (request/response), kode error, dan contoh `curl`.
-- [docs/MCP_CLIENT_GUIDE.md](./docs/MCP_CLIENT_GUIDE.md) — **panduan MCP client**: cara menyambungkan Claude Code/Claude Desktop/custom client via Streamable HTTP atau stdio, referensi 4 tool, dan troubleshooting.
+- [docs/MCP_CLIENT_GUIDE.md](./docs/MCP_CLIENT_GUIDE.md) — **panduan MCP client**: cara menyambungkan Claude Code/Claude Desktop/custom client via Streamable HTTP atau stdio, referensi 5 tool, dan troubleshooting.
 - [docs/postman/](./docs/postman/) — koleksi Postman siap import (`xmail.postman_collection.json` + `xmail.postman_environment.json`).
 
-Status saat ini: **semua fase (1-8) selesai & diverifikasi nyata** — core, SMTP, IMAP, POP3, MCP, hardening review, Windows tray+service, dan ketiga target rilis (Docker x64, Docker Armbian/arm64, Windows x64) sudah dibuild, dijalankan, dan di-smoke-test langsung (bukan cuma lolos compile). Repo juga sudah melalui beberapa putaran review independen (`CODE_REVIEW.md` — arsip lengkap tiap putaran; ringkasan resolusi per temuan di PLAN.md §10). Salah satu putaran menemukan 3 pelanggaran keras (terburuk: Windows Service yang di-install tidak akan pernah bisa start) — semuanya diperbaiki dengan regression test, bukan sekadar dicatat. Lihat PLAN.md §5 untuk detail tiap fase.
+Status saat ini: **semua fase (1-8) selesai & diverifikasi nyata** — core, SMTP, IMAP, POP3, MCP, hardening review, Windows tray+service, dan ketiga target rilis (Docker x64, Docker Armbian/arm64, Windows x64) sudah dibuild, dijalankan, dan di-smoke-test langsung (bukan cuma lolos compile). Repo juga sudah melalui beberapa putaran review independen (`CODE_REVIEW.md` — arsip lengkap tiap putaran; ringkasan resolusi per temuan di PLAN.md §10). Salah satu putaran menemukan 3 pelanggaran keras (terburuk: Windows Service yang di-install tidak akan pernah bisa start) — semuanya diperbaiki dengan regression test, bukan sekadar dicatat. Lihat PLAN.md §5 untuk detail tiap fase. Di luar fase inti itu, **Fase 10** (daftar folder IMAP: `GET /accounts/{id}/folders` + tool MCP `list_folders`, plus klasifikasi error folder 500→400) juga sudah selesai — lihat [PLAN-FOLDERS.md](./PLAN-FOLDERS.md).
 
 ## Fitur
 
 - Multi-akun email dalam satu instance.
 - Kirim email via SMTP (TLS implicit, STARTTLS, atau non-TLS), dukung attachment & custom header (`X-Priority`, dll).
 - Fetch & cek email via IMAP (folder, unread count, attachment list, mark-as-read) dan POP3 (fetch sederhana).
+- Daftar folder IMAP (`GET /accounts/{id}/folders` / tool MCP `list_folders`) — tahu nama folder yang benar beserta atribut perannya (`\Sent`, `\Drafts`, …), tanpa menebak.
 - Fetch email **cache-first** — request pertama dial ke server & simpan ke SQLite, request berikutnya langsung dari cache (parameter `refresh=true` buat paksa ambil ulang dari server).
 - Kredensial akun dienkripsi (AES-256-GCM) sebelum disimpan di SQLite.
-- Expose operasi email sebagai MCP tools (`list_accounts`, `send_email`, `fetch_emails`, `check_new_emails`) untuk AI agent seperti Claude Desktop/Claude Code.
+- Expose operasi email sebagai MCP tools (`list_accounts`, `send_email`, `fetch_emails`, `check_new_emails`, `list_folders`) untuk AI agent seperti Claude Desktop/Claude Code.
 - **Dashboard web ringan untuk manajemen akun** — CRUD akun + uji konektivitas per protokol, disajikan dari binary yang sama (tanpa service/artefak tambahan). Lihat [Dashboard](#dashboard).
 - Single static binary (Go, tanpa CGO), image Docker kecil.
 - **3 varian rilis** dengan behavior identik: Docker x64, Docker Armbian (arm64), Windows x64 (system tray + bisa diinstall sebagai Windows Service). Lihat [Release / Instalasi](#release--instalasi).
@@ -39,9 +41,9 @@ internal/config/         load config dari environment variable
 internal/storage/        koneksi SQLite + migration
 internal/cryptox/        enkripsi/dekripsi kredensial (AES-GCM)
 internal/account/        model, repository, service akun email
-internal/mailer/         interface Sender/Fetcher/Checker
+internal/mailer/         interface Sender/Fetcher/Checker/Marker/FolderLister
 internal/mailer/smtp/    implementasi kirim (SMTP)
-internal/mailer/imap/    implementasi fetch/check (IMAP)
+internal/mailer/imap/    implementasi fetch/check/folder (IMAP)
 internal/mailer/pop3/    implementasi fetch (POP3)
 internal/api/            REST API (router, middleware, handler)
 internal/dashboard/      dashboard web (aset HTML/CSS/JS di-embed + handler statis)
@@ -87,7 +89,7 @@ Binary yang sama menyajikan dashboard web untuk **manajemen akun** (CRUD + uji k
 - **Buka**: `http://localhost:5569` (atau `http://<XMAIL_LISTEN_ADDR>`) di browser. Dari tray Windows, menu **Open dashboard** membuka URL ini.
 - **Masuk**: masukkan nilai `XMAIL_API_KEY`. Key disimpan di `sessionStorage` browser (hilang saat tab ditutup) dan dikirim sebagai header `X-API-Key` pada tiap request — **key yang sama** dengan REST API/MCP.
 - **Yang bisa dilakukan**: list/detail/create/edit/hapus akun, dan uji koneksi SMTP/IMAP/POP3 per akun.
-- **Yang tidak ada di dashboard**: kirim email dan fetch/baca pesan — jalur email tetap lewat REST API/MCP.
+- **Yang tidak ada di dashboard**: kirim email, fetch/baca pesan, dan daftar folder — jalur email tetap lewat REST API/MCP.
 
 Dashboard tidak menambah hak akses: aset statis (`GET /`) memang tanpa auth karena tidak memuat rahasia, tapi semua endpoint API tetap wajib `X-API-Key` (lihat [docs/API.md](./docs/API.md) §3). Karena disajikan same-origin, tidak ada CORS. Respons dashboard diberi CSP `default-src 'self'`.
 
@@ -123,7 +125,7 @@ scripts\release.ps1 -Target <target> [-Version <versi>]
 scripts\release.ps1 -Target all -Version v0.1.0
 ```
 
-Detail cara kerja script & cara menambah target baru ada di [ARCHITECTURE.md § Build & Release](./ARCHITECTURE.md#build--release). `make release-*` cuma alias singkat untuk `release.sh` — kalau tidak punya `make` (default di Windows polos), langsung pakai `release.ps1` atau `release.sh` saja.
+Detail cara kerja script & cara menambah target baru ada di [ARCHITECTURE.md § Build & Release](./ARCHITECTURE.md#6-build--release). `make release-*` cuma alias singkat untuk `release.sh` — kalau tidak punya `make` (default di Windows polos), langsung pakai `release.ps1` atau `release.sh` saja.
 
 ### 1. Docker x64 (`linux/amd64`)
 
@@ -223,4 +225,4 @@ Tidak pakai `testify`/framework tambahan — stdlib `testing` + table-driven tes
 
 ## Kontribusi / Urutan Kerja
 
-Ikuti fase di [PLAN.md §5](./PLAN.md#5-urutan-kerja-fase) secara berurutan: Fase 1 (Core) → Fase 2 (SMTP) → Fase 3 (IMAP) → Fase 4 (POP3) → Fase 5 (MCP) → Fase 6 (Docker & Hardening) → Fase 7 (Windows Tray & Service) → Fase 8 (Release Packaging 3 target). Setiap fase punya langkah verifikasi sendiri di PLAN.md.
+Ikuti fase di [PLAN.md §5](./PLAN.md#5-urutan-kerja-fase) secara berurutan: Fase 1 (Core) → Fase 2 (SMTP) → Fase 3 (IMAP) → Fase 4 (POP3) → Fase 5 (MCP) → Fase 6 (Docker & Hardening) → Fase 7 (Windows Tray & Service) → Fase 8 (Release Packaging 3 target), lalu Fase 10 (Daftar folder IMAP — [PLAN-FOLDERS.md](./PLAN-FOLDERS.md)). Setiap fase punya langkah verifikasi sendiri di PLAN.md.

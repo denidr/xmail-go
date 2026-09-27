@@ -678,6 +678,39 @@
       ]
     },
     {
+      "name": "Folders",
+      "item": [
+        {
+          "name": "List Folders",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts/{{accountId}}/folders?protocol=imap",
+              "host": ["{{baseUrl}}"],
+              "path": ["accounts", "{{accountId}}", "folders"],
+              "query": [
+                { "key": "protocol", "value": "imap", "description": "hanya imap yang mendukung folder (default imap)" }
+              ]
+            },
+            "description": "Daftar folder (mailbox) IMAP beserta delimiter & attributes (mis. \\Sent).\n\nPakai ini untuk tahu nama folder yang BENAR sebelum fetch — nama folder bergantung server/bahasa akun (akun Gmail berbahasa Indonesia memakai '[Gmail]/Surat Terkirim', bukan '[Gmail]/Sent Mail'). `accountId` diambil otomatis dari environment.\n\nResponse 200: {\"data\":[{\"name\":\"INBOX\",\"delimiter\":\"/\"},{\"name\":\"[Gmail]/Surat Terkirim\",\"delimiter\":\"/\",\"attributes\":[\"\\\\Sent\"]}],\"error\":null}.\nPOP3/SMTP -> 400 validation_failed ('protocol \"pop3\" has no folders')."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('data array', () => pm.expect(pm.response.json().data).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "Errors (examples)",
       "item": [
         {
@@ -798,7 +831,7 @@
               "options": { "raw": { "language": "json" } }
             },
             "url": { "raw": "{{baseUrl}}/mcp", "host": ["{{baseUrl}}"], "path": ["mcp"] },
-            "description": "Daftar MCP tools: list_accounts, send_email, fetch_emails, check_new_emails (beserta JSON schema argumennya)."
+            "description": "Daftar MCP tools: list_accounts, send_email, fetch_emails, check_new_emails, list_folders (beserta JSON schema argumennya)."
           }
         },
         {

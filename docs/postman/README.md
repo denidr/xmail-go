@@ -29,6 +29,7 @@ Folder ini berisi koleksi Postman siap import untuk REST API xmail (dan request 
 - **Health** — health check tanpa auth.
 - **Accounts** — CRUD akun + test-connection (SMTP/IMAP/POP3) + skenario validasi (tanpa protokol, POP3 starttls) + 404 setelah delete.
 - **Mail** — kirim (plain, HTML+attachment+headers, tanpa penerima), fetch (cache-first, refresh, POP3), check, mark-read (+ tanpa `uid`).
+- **Folders** — daftar folder IMAP (`GET /accounts/{id}/folders`, memakai `accountId` dari environment).
 - **Errors (examples)** — 401 (tanpa key), 400 (field tak dikenal), 404 (akun tidak ada).
 - **MCP** — `initialize`, `tools/list`, `tools/call` (`list_accounts`, `fetch_emails`) via Streamable HTTP.
 

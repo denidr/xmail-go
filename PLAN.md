@@ -61,7 +61,7 @@ xmail/
 │   │   ├── repository.go             # CRUD ke sqlite (pakai cryptox utk simpan/baca credential)
 │   │   └── service.go                # validasi input, orkestrasi test-connection ke 3 protokol
 │   ├── mailer/
-│   │   ├── types.go                  # interface umum: Sender, Fetcher, Checker + struct Message/Attachment
+│   │   ├── types.go                  # interface umum: Sender, Fetcher, Checker, Marker, FolderLister + struct Message/Folder/Attachment
 │   │   ├── smtp/
 │   │   │   └── client.go             # implementasi Sender pakai go-mail, handle tls_mode: tls/starttls/none
 │   │   ├── imap/
@@ -76,7 +76,7 @@ xmail/
 │   │   ├── send_handler.go            # POST /accounts/{id}/send
 │   │   └── messages_handler.go        # GET /accounts/{id}/messages, POST /accounts/{id}/check
 │   └── mcpserver/
-│       └── server.go                  # daftarkan 4 tools, delegasikan ke account.Service & mailer.*
+│       └── server.go                  # daftarkan 5 tools, delegasikan ke account.Service & mailer.*
 ├── scripts/
 │   ├── release.sh                    # build release 3 target (docker-amd64/arm64, windows-amd64) → dist/ + SHA256SUMS.txt — Git Bash/WSL/Linux/macOS/CI, lihat §8 & ARCHITECTURE.md
 │   └── release.ps1                   # sama persis, versi PowerShell native — untuk Windows tanpa Git Bash/WSL
@@ -94,9 +94,9 @@ xmail/
 └── ARCHITECTURE.md                   # referensi arsitektur & cara extend, untuk manusia + LLM agent
 ```
 
-> Catatan: pohon direktori di atas adalah sketsa desain awal (masih akurat untuk struktur package), bukan listing lengkap tiap file — beberapa file bertambah seiring implementasi (mis. `internal/account/messages.go`, `internal/api/dto.go`, `*_test.go` di tiap package). Listing file yang benar-benar lengkap & selalu up-to-date ada di [ARCHITECTURE.md](./ARCHITECTURE.md#repository-layout).
+> Catatan: pohon direktori di atas adalah sketsa desain awal (masih akurat untuk struktur package), bukan listing lengkap tiap file — beberapa file bertambah seiring implementasi (mis. `internal/account/messages.go`, `internal/api/dto.go`, `*_test.go` di tiap package). Listing file yang benar-benar lengkap & selalu up-to-date ada di [ARCHITECTURE.md](./ARCHITECTURE.md#2-repository-layout).
 
-**Prinsip desain**: `internal/mailer` mendefinisikan interface (`Sender`, `Fetcher`, `Checker`) yang diimplementasikan masing-masing oleh `smtp`, `imap`, `pop3` — supaya `api` dan `mcpserver` handler tidak perlu tahu detail protokol, cukup panggil lewat `account.Service` yang memilih implementasi sesuai config akun.
+**Prinsip desain**: `internal/mailer` mendefinisikan interface (`Sender`, `Fetcher`, `Checker`, `Marker`, `FolderLister`) yang diimplementasikan masing-masing oleh `smtp`, `imap`, `pop3` — supaya `api` dan `mcpserver` handler tidak perlu tahu detail protokol, cukup panggil lewat `account.Service` yang memilih implementasi sesuai config akun.
 
 **Prinsip desain (multi-target release)**: `internal/app.Run(ctx, cfg)` adalah satu-satunya tempat yang menyalakan storage + account service + mailer + API server + MCP server. `cmd/xmail` (Docker) dan `cmd/xmail-tray` (Windows) sama-sama cuma memanggil `app.Run` — bedanya cuma cara start/stop-nya (sinyal OS vs tray menu/Windows SCM). Ini mencegah dua entrypoint punya behavior yang beda-beda seiring waktu.
 
@@ -180,6 +180,7 @@ Semua response: `{"data": ..., "error": null}` atau `{"data": null, "error": {"c
 | GET | `/accounts/{id}/messages` | `?folder=INBOX&limit=20&offset=0&protocol=imap&refresh=false` | Fetch daftar email. **Cache-first**: `MessageCache.Get` menyajikan dari `messages_cache` hanya kalau window yang diminta berada di dalam `coverage` — atau `exhausted` dan window masih mulai di dalamnya — **dan** baris yang tersedia persis `min(limit, coverage-offset)`; kalau tidak, dial ke server. `refresh=true` memaksa dial (fix code review: sebelumnya SELALU live-fetch, cache jadi write-only/dead code) |
 | POST | `/accounts/{id}/check` | `{protocol: "imap"\|"pop3", folder?}` | Trigger cek email baru, update cache, return `{unread_count, new_count}` |
 | POST | `/accounts/{id}/messages/read` | `{protocol?, folder?, uid}` | **Baru** (fix code review: requirement PRD §6.3 "mark as read" tadinya hilang). Tandai 1 pesan sebagai sudah dibaca — IMAP only (`mailer.Marker`), POP3 return error validasi karena tidak ada konsep flag per-pesan. Return `{"marked_read":true}` |
+| GET | `/accounts/{id}/folders` | `?protocol=imap` | **Baru** (PLAN-FOLDERS.md). Daftar mailbox IMAP (`[{name, delimiter?, attributes?}]`, terurut nama), selalu live. Protocol tanpa folder (pop3/smtp) → `400`. Folder yang tidak ada pada `Fetch`/`Check`/`MarkRead` kini `400 validation_failed`, bukan `500` — lihat §10.11 |
 
 ## 4. Kontrak MCP Tools
 
@@ -191,6 +192,7 @@ Didaftarkan di `internal/mcpserver/server.go`, delegasi ke service yang sama den
 | `send_email` | `{account_id, to[], cc[], bcc[], subject, body_text?, body_html?, headers?}` | `{status}` (realisasi akhir — draf awal ada `message_id?` yang tidak pernah diimplementasikan, tidak ada info message-id yang bisa dikembalikan dari SMTP; `cc[]`/`bcc[]` dan `headers` ditambah saat fix code review. Attachments tetap REST-only — base64 binary di argumen tool call MCP pengalaman yang buruk, lihat §10.6 #22) |
 | `fetch_emails` | `{account_id, protocol?, folder?, limit?, refresh?}` | `[{uid, folder, subject, from, to, date, is_read, attachments?}]` (realisasi akhir — draf awal cuma `{id, subject, from, date, is_read}`, lihat `mailer.Message` di ARCHITECTURE.md §2; `protocol`, `refresh`, dan `attachments` ditambah saat fix code review) |
 | `check_new_emails` | `{account_id, protocol?, folder?}` | `{unread_count, new_count}` |
+| `list_folders` | `{account_id, protocol?}` | `[{name, delimiter?, attributes?}]` (PLAN-FOLDERS.md — hanya IMAP; pop3/smtp → `isError`) |
 
 ## 5. Urutan Kerja (Fase)
 
@@ -263,10 +265,10 @@ Didaftarkan di `internal/mcpserver/server.go`, delegasi ke service yang sama den
 > - Tidak ada perubahan pada `messages_handler.go`/`accounts_handler.go`/`internal/api` sama sekali di fase ini — bukti desain dispatch protokol generik dari Fase 3 (`account.Service.resolveFetcher`) sudah benar sejak awal.
 
 ### Fase 5 — MCP Server ✅ SELESAI
-- [x] `internal/mcpserver`: setup `mcp-go` server — **HTTP (Streamable HTTP transport) sebagai default**, di-mount di `/mcp` pada HTTP server yang sama dengan REST API (bukan port terpisah); **stdio opsional** via `XMAIL_MCP_STDIO=true` (lihat catatan). 4 tools terdaftar (`list_accounts`, `send_email`, `fetch_emails`, `check_new_emails`), semuanya memanggil `account.Service` yang sama dengan REST handler — tidak ada logic terduplikasi.
+- [x] `internal/mcpserver`: setup `mcp-go` server — **HTTP (Streamable HTTP transport) sebagai default**, di-mount di `/mcp` pada HTTP server yang sama dengan REST API (bukan port terpisah); **stdio opsional** via `XMAIL_MCP_STDIO=true` (lihat catatan). 4 tools terdaftar (`list_accounts`, `send_email`, `fetch_emails`, `check_new_emails`; `list_folders` ditambahkan di Fase 10), semuanya memanggil `account.Service` yang sama dengan REST handler — tidak ada logic terduplikasi.
 - [x] MCP HTTP handler dan (kalau diaktifkan) stdio server jalan di `internal/app.Run`, sejalan dengan HTTP API server
 - [x] Unit test: tiap tool handler (input valid/invalid, `account.Service` pakai mailer mock yang sama polanya dengan Fase 3) — **7 test, semua hijau**
-- [x] Verifikasi: `go build ./...`, `go vet ./...`, `go test ./...` (60 test), `go test -tags integration ./...` (71 test) hijau; **smoke test end-to-end via `curl` ke binary asli** — `initialize` → `tools/list` (4 tools dengan schema benar) → `tools/call list_accounts` — semua sukses lewat HTTP JSON-RPC beneran, bukan cuma unit test.
+- [x] Verifikasi: `go build ./...`, `go vet ./...`, `go test ./...` (60 test), `go test -tags integration ./...` (71 test) hijau; **smoke test end-to-end via `curl` ke binary asli** — `initialize` → `tools/list` (4 tools dengan schema benar saat Fase 5; kini 5 setelah Fase 10) → `tools/call list_accounts` — semua sukses lewat HTTP JSON-RPC beneran, bukan cuma unit test.
 
 > **Catatan implementasi (penyesuaian dari rencana awal):**
 > - **Transport default HTTP, bukan stdio** — beda dari asumsi awal "stdio &/atau HTTP, putuskan saat implementasi". Alasan: xmail didesain jalan sebagai service headless di Docker (§0.1), di mana stdio MCP tidak berguna (tidak ada proses interaktif attached). MCP di-mount di `/mcp` pada `http.Server` yang sama dengan REST API — satu port, satu proses, **dilindungi `X-API-Key` yang sama** (karena dipasang lewat `api.NewServer`'s mux, bukan handler terpisah di luar middleware). Stdio tetap tersedia via env `XMAIL_MCP_STDIO=true` untuk skenario MCP client yang nge-spawn `xmail` sebagai subprocess langsung (mis. dari Windows tray, Fase 7).
@@ -302,7 +304,7 @@ Didaftarkan di `internal/mcpserver/server.go`, delegasi ke service yang sama den
 > - **⚠️ `Install as Windows Service`/`Uninstall` SENGAJA TIDAK dieksekusi sungguhan di sesi ini** — install service Windows adalah perubahan level-sistem (butuh Administrator, mendaftar entry baru di Service Control Manager) yang jauh lebih sulit dibalik daripada sekadar menjalankan/mematikan proses biasa. Ini di luar scope "jalankan & verifikasi" yang aman dilakukan otomatis tanpa persetujuan eksplisit pengguna — beda dengan menjalankan `.exe` secara interaktif lalu langsung dimatikan (yang sudah dilakukan & terbukti aman/reversibel dalam hitungan detik). **Kode `program.Start`/`program.Stop`/`svc.Install()`/`svc.Uninstall()` sudah lengkap dan mengikuti API `kardianos/service` standar** (contoh resminya identik polanya), tapi verifikasi "muncul di `services.msc` dan bisa di-start/stop dari sana" masih **perlu dilakukan manual oleh user** (jalankan `.exe`, klik "Install as Windows Service" dari tray, cek `services.msc`/`sc query XmailService`).
 
 ### Fase 8 — Release Packaging (3 Target) ✅ SELESAI — SEMUA 3 TARGET DIBUILD & DIVERIFIKASI NYATA
-- [x] **`scripts/release.sh`** — script build release nyata (bukan cuma inline command di Makefile), dispatcher untuk ketiga target (`docker-amd64`/`docker-arm64`/`windows-amd64`/`all`), auto-detect versi dari `git describe --tags --always --dirty` (fallback `dev`), output ke `dist/` (bukan `bin/`), dan tulis `dist/SHA256SUMS.txt` di akhir. `Makefile` `release-*` sekarang cuma wrapper tipis yang panggil script ini — logic aslinya cuma di satu tempat, dan script-nya jalan standalone tanpa `make` (penting untuk CI nanti). Detail lengkap ada di [ARCHITECTURE.md](./ARCHITECTURE.md#build--release).
+- [x] **`scripts/release.sh`** — script build release nyata (bukan cuma inline command di Makefile), dispatcher untuk ketiga target (`docker-amd64`/`docker-arm64`/`windows-amd64`/`all`), auto-detect versi dari `git describe --tags --always --dirty` (fallback `dev`), output ke `dist/` (bukan `bin/`), dan tulis `dist/SHA256SUMS.txt` di akhir. `Makefile` `release-*` sekarang cuma wrapper tipis yang panggil script ini — logic aslinya cuma di satu tempat, dan script-nya jalan standalone tanpa `make` (penting untuk CI nanti). Detail lengkap ada di [ARCHITECTURE.md](./ARCHITECTURE.md#6-build--release).
 - [x] `version` var ditambahkan ke `cmd/xmail` & `cmd/xmail-tray` (`var version = "dev"`), di-inject via `-ldflags -X main.version=$VERSION` oleh script, di-log saat startup — **diverifikasi**: binary hasil build script menampilkan versi yang benar saat dijalankan.
 - [x] **`scripts/release.sh docker-amd64`** — **berhasil, diverifikasi penuh sampai runtime**. Docker Desktop akhirnya berhasil dinyalakan (path launcher sebelumnya salah, lihat catatan Fase 6) → `docker build` sukses → **ketahuan bug crash saat container beneran dijalankan** (`/app/data` tidak writable, lihat catatan Fase 6, sudah diperbaiki) → setelah fix: `docker run` tetap `Up`, `curl /healthz` + `POST /accounts` + `GET /accounts` semua sukses, `docker restart` dengan named volume → **data akun masih ada** (persistence terbukti beneran, bukan cuma didesain). Image: `xmail:dev-amd64`, 25.5MB disk / 6.48MB content, tarball `dist/xmail-dev-linux-amd64-docker.tar.gz` 6.2MB.
 - [x] **`scripts/release.sh docker-arm64`** — **berhasil, diverifikasi penuh via emulasi QEMU** (buildx `linux/arm64` di host `linux/amd64`, proxy realistis untuk board Armbian sungguhan). Build makan waktu jauh lebih lama dari amd64 (compile Go under emulasi CPU berat, >5 menit, jalan di background) tapi selesai bersih. Container jalan (`docker run` dengan warning normal "platform mismatch, emulated" dari Docker, bukan error), `curl /healthz` + create + list akun semua sukses — **`modernc.org/sqlite` (pure-Go) terbukti benar-benar jalan di arsitektur ARM64**, bukan cuma lolos cross-compile. Image: `xmail:dev-arm64`, 6.11MB, tarball `dist/xmail-dev-linux-arm64-docker.tar.gz` 5.9MB.
@@ -322,6 +324,20 @@ Didaftarkan di `internal/mcpserver/server.go`, delegasi ke service yang sama den
 - OAuth2 provider (Gmail/Outlook modern auth)
 - IMAP IDLE / push notification
 - Rate limiting per API key
+
+### Fase 10 — Daftar folder IMAP & semantik error folder ✅ SELESAI — [PLAN-FOLDERS.md](./PLAN-FOLDERS.md)
+Rencana terpisah & rasional lengkap: [PLAN-FOLDERS.md](./PLAN-FOLDERS.md). Muncul dari pengujian langsung akun Gmail asli: nama folder IMAP harus ditebak (dan bergantung bahasa akun), dan folder yang tidak ada dijawab `500`.
+- [x] `mailer.Folder` / `mailer.FolderLister` / `mailer.ErrFolderNotFound` (`internal/mailer/types.go`); `imap.Client.ListFolders` (`LIST "" "*"`, urut nama, delimiter NIL → `""`, atribut lolos apa adanya) + `classifyFolderErr`.
+- [x] `account.Protocol.FolderLister` + satu baris registrasi di `internal/app.wireMailer`; `Service.ListFolders` (protokol tanpa folder → `ErrValidation`); helper `domainError` (`ErrFolderNotFound` → `ErrValidation`).
+- [x] REST `GET /accounts/{id}/folders` + tool MCP `list_folders`; tanpa DTO (serialisasi langsung, `nil` → `[]`).
+- [x] Test: unit `classifyFolderErr` (`internal/mailer/imap/client_test.go`), integration `ListFolders` (fake `imapserver` handler LIST), service (`ListFolders` + pemetaan error), REST (`internal/api/folders_test.go`, termasuk 500→400), MCP (handler + transport `list_folders`).
+- [x] Verifikasi: gate dev hijau (default + `-tags integration` + `-tags xmailtray`). Perubahan 500→400 **dibuktikan** dulu gagal tanpa `domainError` (revert-sementara → tes REST menampilkan `500 internal_error` persis perilaku lama), lalu di-restore.
+- [x] **Verifikasi live akun Gmail asli** (`stem.developer.apps@gmail.com`, binary headless baru menunjuk `dist/xmail.db`): `/folders` menemukan `[Gmail]/Surat Terkirim` (`\Sent`); `/messages` ke folder itu `200`; `/messages?folder=[Gmail]/Sent Mail` kini `400 validation_failed`; MCP `list_folders` mengembalikan daftar yang sama dan `fetch_emails` folder-salah `isError: true`.
+
+> **Catatan implementasi (sesuai rencana, tanpa penyimpangan desain):**
+> - Tidak ada dependency, migrasi, env var, atau file rilis baru; endpoint + tool otomatis ikut ketiga target rilis lewat `internal/app.Run` yang sama.
+> - Resolusi peran folder otomatis (klien kirim `"sent"`) **sengaja ditunda** — yang dikembalikan adalah atribut (`\Sent`, `\Drafts`, …) supaya klien memetakannya sendiri (PLAN-FOLDERS.md §8).
+> - Nama folder non-ASCII (modified UTF-7/UTF-8) belum diuji terhadap server nyata (akun uji ASCII) — tetap risiko terbuka yang dicatat di PLAN-FOLDERS.md §8, bukan klaim selesai.
 
 ## 6. Testing Strategy
 
@@ -343,7 +359,7 @@ Ditulis di file `_test.go` bersebelahan dengan kode yang diuji, jalan sebagai ba
 | `internal/account` (service) | Validasi input (field wajib per protokol yang diisi), `TestConnection` dispatch ke implementasi yang benar sesuai protokol | **mock** `mailer.Sender`/`Fetcher`/`Checker` — karena semua sudah didesain sebagai interface (lihat §1), tinggal buat struct mock kecil di test file, tidak butuh network sama sekali |
 | `internal/mailer/smtp`, `imap`, `pop3` | Mapping `account.TLSMode` → opsi TLS library yang benar (unit, tanpa dial beneran); parsing/format pesan | unit murni untuk logic mapping; koneksi network masuk ke §6.2 integration |
 | `internal/api` | Tiap handler: status code & body JSON envelope yang benar untuk kasus sukses & error (400/401/404/500), `apiKeyAuth` middleware menolak key salah/kosong | `net/http/httptest` (`httptest.NewServer` / `httptest.NewRecorder`), service di-mock lewat interface yang sama dengan di atas |
-| `internal/mcpserver` | Tiap tool (`list_accounts`, `send_email`, `fetch_emails`, `check_new_emails`) mengembalikan schema/error yang benar untuk input valid & invalid | panggil tool handler langsung (in-process), service di-mock |
+| `internal/mcpserver` | Tiap tool (`list_accounts`, `send_email`, `fetch_emails`, `check_new_emails`, `list_folders`) mengembalikan schema/error yang benar untuk input valid & invalid | panggil tool handler langsung (in-process), service di-mock |
 
 ### 6.2 Integration Test (butuh "server" beneran, tapi tetap lokal — tanpa akun email asli)
 
@@ -584,3 +600,17 @@ Akibatnya rantainya konsisten dengan laporan: mati di detik pertama → tidak ad
 Catatan: ini **beda** dari §10.6 #19. #19 soal service yang di-install (`EnvVars` tidak di-set, jadi SCM meluncurkan proses dengan environment kosong); yang ini soal proses **interaktif** yang memang belum pernah punya konfigurasi, dan soal errornya yang tidak terlihat. Keduanya tetap berlaku dan independen.
 
 **Hasil akhir (§10.10)**: `go test ./...` = **130**; `go test -tags integration ./...` = **149**; `go test -tags xmailtray ./internal/winservice/ ./cmd/xmail-tray/` = 3 + **5** baru. Tidak ada dependency baru. `scripts/test.sh`/`test.ps1` diperluas supaya ikut menjalankan `./cmd/xmail-tray/` dengan tag `xmailtray`.
+
+### 10.11 Fitur daftar folder IMAP + perubahan perilaku folder-tidak-ada (500 → 400)
+
+Sumber: [PLAN-FOLDERS.md](./PLAN-FOLDERS.md), dikerjakan sebagai Fase 10. Bukan temuan code review, melainkan hasil pengujian langsung terhadap akun Gmail asli (`xmail-tray-windows-amd64-0.1.0`, akun berbahasa Indonesia): `GET /messages?folder=[Gmail]/Sent Mail` → `500 internal_error`, padahal nama folder sebenarnya `[Gmail]/Surat Terkirim`, dan tidak ada cara menemukan nama itu — IMAP `LIST` tidak pernah dipakai.
+
+Ringkas implementasi: `mailer.Folder` + interface opsional `mailer.FolderLister` (konvensi baru untuk kapabilitas protokol, seperti `mailer.Marker`), implementasi satu di `imap.Client.ListFolders` (satu `LIST "" "*"`, urut nama, delimiter NIL → `""`), diekspos lewat REST `GET /accounts/{id}/folders` dan tool MCP `list_folders`. Registrasi lewat `account.Protocol.FolderLister` + satu baris di `internal/app.wireMailer` (ADR 0001) — bukan field/setter baru di `Service`. Selalu live (tidak di-cache): LIST murah, cache bikin daftar basi.
+
+**Keputusan tercatat — perubahan perilaku 500 → 400**: `GET /messages`, `POST /check`, dan `POST /messages/read` dengan `folder` yang tidak ada sebelumnya `500 internal_error`, kini `400 validation_failed`. Alasannya: folder adalah input pemanggil, jadi klasifikasinya caller error; error yang bukan kesalahan input (gagal dial, auth salah, timeout, error IMAP lain) **tetap** `500` supaya gangguan server tidak disamarkan sebagai kesalahan input. Deteksi tetap di `internal/mailer/imap` (`classifyFolderErr` memetakan `ResponseCodeNonExistent`/`TRYCREATE` → sentinel `mailer.ErrFolderNotFound`) sehingga pengetahuan protokol tidak naik ke atas `mailer/*`; `account.Service.domainError` yang menerjemahkan sentinel → `ErrValidation`, dipakai di ketiga jalur. **Dibuktikan**: dengan `domainError` di-revert-sementara, tes REST menampilkan `500 internal_error` persis perilaku lama; setelah restore, lolos. Preseden pencatatan: `PUT` = full replace (§5 Fase 1).
+
+Diterima tanpa perubahan (sengaja): entri `\Noselect` dikembalikan apa adanya beserta atributnya (klien yang memutuskan; fetch ke situ memang `400`); daftar folder **tidak** di-cache; resolusi peran folder otomatis (klien kirim `"sent"`) ditunda — cukup kembalikan atribut (`\Sent`, `\Drafts`, …). Tidak ada dependency, migrasi, env var, atau file rilis baru.
+
+**Verifikasi live**: dijalankan terhadap akun Gmail asli (bukan hanya test) — `/folders` menemukan `[Gmail]/Surat Terkirim` di antara 9 folder (attributes `\Sent`), `/messages` ke folder itu `200`, `/messages?folder=[Gmail]/Sent Mail` `400 validation_failed` (bukan `500`), dan lewat `/mcp` `list_folders` mengembalikan daftar yang sama sementara `fetch_emails` folder-salah `isError: true`. Rincian di [PLAN-FOLDERS.md §5](./PLAN-FOLDERS.md).
+
+**Hasil akhir (§10.11)**: `go test ./...` = **151** (naik dari 130; +21 test); `go test -tags integration ./...` = **171** (naik dari 149; +1 integration +21 unit ikut terhitung); `go test -tags xmailtray ./internal/winservice/ ./cmd/xmail-tray/` hijau. `gofmt -l .` bersih, `go vet` (+ `-tags xmailtray`) bersih, `go mod tidy -diff` kosong. Dua regression dikonfirmasi gagal tanpa fix-nya: `domainError` 500→400 (tes REST menampilkan `500 internal_error`), dan guard `FolderLister == nil` (tanpa guard kedua test panic nil-pointer, bukan 400).

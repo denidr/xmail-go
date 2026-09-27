@@ -66,6 +66,7 @@ Saat ini kirim/terima email biasanya butuh integrasi langsung ke SMTP/IMAP/POP3 
 - Fetch daftar email (dengan pagination, filter folder untuk IMAP) dari akun tertentu.
 - Cek email baru (unread count / polling manual via endpoint) — tanpa push/webhook di MVP.
 - IMAP: dukung folder selain INBOX, mark as read.
+- IMAP: **daftar folder** (mailbox) di server — nama folder bergantung server/bahasa akun, jadi klien bisa menemukan nama yang benar beserta atribut peran (`\Sent`, `\Drafts`, …) alih-alih menebak. Folder yang diminta tapi tidak ada dijawab sebagai error input (`400`), bukan error server (`500`).
 - POP3: fetch sederhana dari server yang tidak mendukung IMAP.
 - **Metadata email** (subject, from, to, date, status baca, attachment list) disimpan/cache di SQLite agar fetch berikutnya lebih cepat (bukan selalu round-trip penuh ke mail server). Cache hanya menyajikan hasil kalau window yang diminta sudah tercakup (`messages_cache_state`); kalau tidak, fetch akan dial ke server — supaya `limit` yang lebih besar tidak diam-diam dipotong ke halaman cache lama. Halaman yang lebih pendek dari yang diminta membuktikan ujung mailbox, jadi baris cache di luar ujung itu dibuang — bukan disajikan sebagai pesan yang sudah dihapus di server (`Record` di `internal/account/messages.go`; PLAN.md §10.9). **Isi/body email (text/HTML) sengaja tidak di-cache** — di luar scope MVP (kalau butuh isi lengkap, itu tugas MUA/client di luar xmail; xmail cuma expose metadata biar ringan). *(Klarifikasi: draf awal pakai frasa "Body & metadata email" yang ambigu — dibaca sebagian orang seolah body ikut di-cache, padahal daftar field yang disebutkan cuma metadata. Diperjelas di sini setelah ditandai sebagai potensi spec gap saat review.)*
 
@@ -75,6 +76,7 @@ Saat ini kirim/terima email biasanya butuh integrasi langsung ke SMTP/IMAP/POP3 
   - `send_email` — kirim email dari akun tertentu.
   - `fetch_emails` — ambil daftar email terbaru dari akun/folder tertentu.
   - `check_new_emails` — cek jumlah email baru/unread.
+  - `list_folders` — daftar folder (mailbox) IMAP beserta atributnya, supaya agent tahu nama folder yang benar sebelum fetch.
 - **MCP Client**: kemampuan service untuk memanggil MCP server eksternal lain bila suatu fitur butuh integrasi. **Backlog penuh** (lihat PLAN.md Fase 9) — belum ada kode sama sekali, termasuk interface, sengaja tidak di-stub duluan. *(Revisi: draf awal bilang "disiapkan sebagai extensible interface", sempat diimplementasikan sebagai interface `ExternalToolCaller` tanpa satu pun pemanggil — ditemukan saat code review sebagai dead abstraction, lalu dihapus. Keputusannya: desain interface yang benar cuma bisa ditentukan begitu ada use case konkret yang mau diimplementasikan; interface spekulatif tanpa consumer nyata cuma nebak-nebak bentuk API yang mungkin salah dan harus diubah lagi nanti.)*
 
 ### 6.5 Penyimpanan Data (SQLite)
@@ -126,6 +128,7 @@ DELETE /accounts/{id}                 # hapus akun
 POST   /accounts/{id}/test-connection # validasi SMTP/IMAP/POP3 config
 
 POST   /accounts/{id}/send            # kirim email (dukung attachments[] + headers{} custom)
+GET    /accounts/{id}/folders         # daftar folder (mailbox) IMAP (query: protocol) — untuk menemukan nama folder yang benar
 GET    /accounts/{id}/messages        # fetch email, cache-first (query: folder, limit, offset, protocol, refresh)
 POST   /accounts/{id}/check           # trigger cek email baru, return unread count
 POST   /accounts/{id}/messages/read   # tandai 1 pesan sudah dibaca (IMAP only)
@@ -156,7 +159,7 @@ Semua request API butuh header `X-API-Key` (pengecualian: `GET /healthz` dan ase
 
 1. **Fase 1 — Core**: skema SQLite, CRUD akun, enkripsi credential, kirim email via SMTP (TLS + non-TLS).
 2. **Fase 2 — Fetch**: fetch/check email via IMAP (primary) + POP3 (basic), cache metadata di SQLite.
-3. **Fase 3 — MCP**: expose MCP server dengan 4 tools inti (list_accounts, send_email, fetch_emails, check_new_emails).
+3. **Fase 3 — MCP**: expose MCP server dengan 4 tools inti (list_accounts, send_email, fetch_emails, check_new_emails) — ditambah `list_folders` saat Fase 10 (PLAN-FOLDERS.md).
 4. **Fase 4 — Packaging & Hardening**: Dockerfile multi-stage, dokumentasi API, test-connection endpoint, review security (enkripsi, TLS default).
 5. **Fase 5 — Dashboard Web (manajemen akun)**: UI CRUD akun + uji konektivitas per protokol, disajikan dari binary yang sama (aset statis di-`go:embed`, auth pakai API key yang sudah ada) — lihat §6.7 dan [PLAN-DASHBOARD.md](./PLAN-DASHBOARD.md).
 6. **Fase 6 (opsional)** — MCP client capability, fitur tambahan sesuai kebutuhan nyata.

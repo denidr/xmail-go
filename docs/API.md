@@ -37,7 +37,7 @@ Istilah inti (lihat [`CONTEXT.md`](../CONTEXT.md) untuk glosarium lengkap):
 | **Mailer protocol** | `smtp` (kirim), `imap` (fetch/check/mark-read), `pop3` (fetch saja). Satu akun boleh mengonfigurasi sebagian saja. |
 | **Connection** | `{host, port, tls_mode}` untuk satu protokol pada satu akun. |
 | **Message** | Metadata satu email: UID, subject, from, to, date, is_read, nama-nama attachment. **Bukan** body. |
-| **Folder** | Mailbox bernama di server. IMAP bisa banyak; POP3 hanya punya `INBOX`. |
+| **Folder** | Mailbox bernama di server. IMAP bisa banyak; POP3 hanya punya `INBOX`. Nama folder IMAP bergantung server/bahasa akun — pakai `GET /accounts/{id}/folders` untuk mengetahuinya, jangan menebak. |
 | **Fetch window** | Sepotong mailbox, terbaru dulu: `limit` pesan terbaru, melewati `offset`. |
 | **Message cache** | Store lokal metadata Message, di-key `(account, protocol, folder)`. |
 | **Coverage / Exhausted** | Seberapa banyak pesan terbaru yang dijamin ada di cache / seluruh mailbox sudah tercache. |
@@ -52,6 +52,8 @@ Kemampuan per protokol:
 | POP3 | — | ya | tidak | tidak | tidak | `INBOX` saja |
 
 Catatan POP3: tidak punya konsep flag per-pesan, jadi `is_read` selalu `true`, `unread_count` selalu `0`, dan `POST /messages/read` mengembalikan error. TLS `starttls` juga **tidak didukung** POP3.
+
+IMAP bisa **daftar folder** lewat `GET /accounts/{id}/folders` (§7.12) — POP3 selalu `INBOX` dan protokol itu tidak mendukung listing (mengembalikan `400`).
 
 ## 2. Quickstart
 
@@ -114,11 +116,13 @@ Setiap response — sukses maupun gagal, semua endpoint — memakai bentuk yang 
 |---|---|---|
 | `unauthorized` | 401 | Header `X-API-Key` hilang atau salah |
 | `invalid_json` | 400 | Body bukan JSON valid, atau ada field tak dikenal (decoder pakai `DisallowUnknownFields`) |
-| `validation_failed` | 400 | Field wajib kosong, `tls_mode` tidak valid, POP3 `starttls`, `uid` kosong, protokol tidak mendukung operasi, akun tidak punya konfigurasi protokol tsb, dsb |
+| `validation_failed` | 400 | Field wajib kosong, `tls_mode` tidak valid, POP3 `starttls`, `uid` kosong, protokol tidak mendukung operasi, akun tidak punya konfigurasi protokol tsb, **folder tidak ada di server**, dsb |
 | `not_found` | 404 | `account_id` tidak ada (termasuk setelah dihapus) |
 | `internal_error` | 500 | Error lain: gagal dial server mail, kredensial salah saat kirim, masalah DB/query, dll |
 
 Penting: error koneksi/kirim ke server mail membawa pesan asli dari library protokol (mis. `smtp: send: ...`, `imap: login: ...`) tetapi dibungkus kode `internal_error`. Error yang disebabkan input pemanggil (validasi) memakai `validation_failed`.
+
+**Perubahan perilaku (folder tidak ada):** `GET /messages` dengan `folder` yang tidak ada sekarang `400 validation_failed`, bukan `500`. Berlaku juga untuk `POST /check` dan `POST /messages/read` dengan folder salah. Pesan error menyebut nama folder dan teks dari server (mis. `Unknown Mailbox`). Cek daftar nama folder yang benar lewat `GET /accounts/{id}/folders`. Error yang **bukan** kesalahan input (gagal dial, auth salah, timeout, error IMAP lain) tetap `500`.
 
 Body tidak boleh punya field tak dikenal — decoder menolaknya sebagai `invalid_json`. Contoh: mengirim `{"to":["a@b.c"],"Subject":"x"}` (huruf besar) akan gagal.
 
@@ -203,6 +207,7 @@ Ringkasan:
 | DELETE | `/accounts/{id}` | ya | Hapus akun → `200` |
 | POST | `/accounts/{id}/test-connection` | ya | Uji koneksi+auth → `200` |
 | POST | `/accounts/{id}/send` | ya | Kirim email → `200` |
+| GET | `/accounts/{id}/folders` | ya | Daftar folder (IMAP) → `200` |
 | GET | `/accounts/{id}/messages` | ya | Fetch (cache-first) → `200` |
 | POST | `/accounts/{id}/check` | ya | Cek email baru → `200` |
 | POST | `/accounts/{id}/messages/read` | ya | Tandai read (IMAP) → `200` |
@@ -426,7 +431,7 @@ Catatan per protokol:
 | `folder` | folder yang diminta | selalu `INBOX` |
 | Body email | tidak diunduh (metadata saja) | tidak diunduh (header saja) |
 
-Status: `200` sukses (termasuk `[]` bila window kosong); `400 validation_failed` bila `protocol` SMTP/invalid atau protokol tak terkonfigurasi; `404` id tak ada; `500` gagal dial/fetch.
+Status: `200` sukses (termasuk `[]` bila window kosong); `400 validation_failed` bila `protocol` SMTP/invalid, protokol tak terkonfigurasi, atau `folder` tidak ada di server; `404` id tak ada; `500` gagal dial/fetch.
 
 ---
 
@@ -463,7 +468,47 @@ Status: `200`; `400` protokol invalid/tak terkonfigurasi; `404`; `500` gagal dia
 
 **IMAP only** (menset flag `\Seen`). Untuk `protocol=pop3` → `400 validation_failed` karena POP3 tak punya flag per-pesan. Cache lokal ikut diperbarui sehingga fetch ber-cache berikutnya konsisten.
 
-Status: `200`; `400` (`uid` kosong, POP3, UID imap tidak valid); `404`; `500` gagal dial/store.
+Status: `200`; `400` (`uid` kosong, POP3, UID imap tidak valid, folder tidak ada); `404`; `500` gagal dial/store.
+
+---
+
+### 7.12 `GET /accounts/{id}/folders` — daftar folder
+
+- **Query:** `?protocol=imap` (opsional, default `imap`).
+- **Response `200`:** array [`Folder`](#86-folder), diurutkan berdasarkan nama.
+
+Dipakai untuk mengetahui nama folder yang benar sebelum memanggil `/messages` — nama folder IMAP bergantung server/akun (mis. Gmail berbahasa Indonesia memakai `[Gmail]/Surat Terkirim`, bukan `[Gmail]/Sent Mail`). Tiap entri membawa `attributes` peran (mis. `\Sent`, `\Drafts`) sehingga klien bisa memetakan folder pentingnya sendiri.
+
+```bash
+curl -s "$BASE/accounts/$ID/folders" -H "X-API-Key: $XMAIL_API_KEY"
+```
+
+```json
+{
+  "data": [
+    { "name": "INBOX", "delimiter": "/" },
+    { "name": "[Gmail]/Surat Terkirim", "delimiter": "/", "attributes": ["\\Sent", "\\HasNoChildren"] },
+    { "name": "[Gmail]", "delimiter": "/", "attributes": ["\\Noselect", "\\HasChildren"] }
+  ],
+  "error": null
+}
+```
+
+Catatan:
+
+- Selalu **live** ke server (satu perintah `LIST` yang murah; tidak di-cache).
+- `delimiter` di-omit bila server melaporkan NIL; `attributes` di-omit bila kosong.
+- Entri `\Noselect` dikembalikan apa adanya (tidak difilter) — entri itu **tidak bisa** di-`SELECT`, jadi fetch ke folder tersebut akan `400`.
+- Selalu `[]` (bukan `null`) bila server tidak melaporkan folder apa pun.
+
+Status:
+
+| Code | Kapan |
+|---|---|
+| `200` | Berhasil (termasuk `[]`) |
+| `400 validation_failed` | `protocol` bukan IMAP (`pop3`/`smtp`), akun tidak punya konfigurasi protokol tsb, atau protokol tidak didukung |
+| `404 not_found` | `account_id` tidak ada |
+| `500 internal_error` | Gagal dial/login ke server, atau `LIST` gagal |
 
 ## 8. Referensi tipe data
 
@@ -537,6 +582,16 @@ Dikembalikan semua endpoint akun. **Tidak pernah** berisi kredensial.
 |---|---|---|
 | `unread_count` | int | IMAP saja; POP3 = 0 |
 | `new_count` | int | dari 50 pesan terbaru yang belum tercache |
+
+### 8.6 `Folder`
+
+Dikembalikan `GET /accounts/{id}/folders`.
+
+| Field | Tipe | Catatan |
+|---|---|---|
+| `name` | string | nama mailbox persis seperti di server (pakai ini untuk query `folder`) |
+| `delimiter` | string | pemisah hierarki (mis. `/`); di-omit bila server melaporkan NIL |
+| `attributes` | string[] | atribut mailbox (mis. `\Sent`, `\Drafts`, `\Noselect`, `\HasChildren`); di-omit bila kosong |
 
 ## 9. Walkthrough end-to-end
 
@@ -619,7 +674,7 @@ Binary xmail juga menyajikan dashboard web untuk **manajemen akun** (CRUD + uji 
 | Aset | `GET /`, `GET /app.js`, `GET /style.css` — **tanpa auth**, di-`go:embed` ke binary |
 | Auth dashboard | halaman login menerima `XMAIL_API_KEY`, menyimpannya di `sessionStorage`, lalu mengirimnya sebagai header `X-API-Key` pada setiap panggilan API |
 | Cakupan | list/detail/create/update/delete akun + `POST /accounts/{id}/test-connection` per protokol |
-| Bukan cakupan | kirim email, fetch/check pesan, mark-read (tetap REST/MCP) |
+| Bukan cakupan | kirim email, fetch/check pesan, mark-read, daftar folder (tetap REST/MCP) |
 | Header respons aset | `Content-Security-Policy: default-src 'self'`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-cache` |
 
 Yang penting untuk integrasi:
