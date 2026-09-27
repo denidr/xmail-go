@@ -7,7 +7,6 @@
 // default browser. When launched by the Windows Service Control
 // Manager (i.e. not interactively — see winservice.Interactive), it
 // skips the tray UI entirely and runs as a plain background service.
-// See PLAN.md "Release Build — Windows x64".
 //
 // Excluded from the default build (custom tag "xmailtray" must be
 // passed explicitly, see Makefile release-windows-amd64) so the Docker
@@ -47,7 +46,7 @@ func main() {
 
 	cfg, err := config.Load()
 	if err != nil {
-		fatalStartup(logPath, "xmail — konfigurasi belum lengkap", err)
+		fatalStartup(logPath, "xmail — configuration is incomplete", err)
 	}
 
 	if !winservice.Interactive() {
@@ -57,10 +56,10 @@ func main() {
 		// directs.
 		svc, err := winservice.New(cfg, version)
 		if err != nil {
-			fatalStartup(logPath, "xmail — gagal menyiapkan Windows Service", err)
+			fatalStartup(logPath, "xmail — failed to set up the Windows Service", err)
 		}
 		if err := svc.Run(); err != nil {
-			fatalStartup(logPath, "xmail — Windows Service berhenti dengan error", err)
+			fatalStartup(logPath, "xmail — Windows Service stopped with an error", err)
 		}
 		return
 	}
@@ -73,7 +72,7 @@ func main() {
 // could be opened (e.g. an unwritable cache directory).
 func logPathOrUnavailable(logPath string) string {
 	if logPath == "" {
-		return "(file log tidak tersedia — hanya stderr)"
+		return "(log file unavailable — stderr only)"
 	}
 	return logPath
 }
@@ -218,7 +217,7 @@ func dashboardURL(listenAddr string) string {
 
 // openBrowser shells out to the OS default-browser handler. Best
 // effort only — failures are logged, not surfaced to the user (no
-// dialog support in this MVP, see PLAN.md Fase 7 backlog note).
+// dialog support in this MVP).
 func openBrowser(url string) {
 	if err := exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start(); err != nil {
 		log.Printf("xmail-tray: open browser: %v", err)

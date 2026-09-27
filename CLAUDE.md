@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 xmail: an email-as-a-service backend in Go. Multi-account SMTP send / IMAP+POP3 fetch, exposed identically over a REST API and an MCP server, credentials encrypted at rest in SQLite. Ships as three release targets from one codebase: Docker x64, Docker Armbian (arm64), Windows x64 (tray + Windows Service).
 
-**Read `ARCHITECTURE.md` before making non-trivial changes** — it is the authoritative, up-to-date technical reference (file-by-file layout, request lifecycles, data model, and step-by-step recipes for the change you're about to make: new REST endpoint, new MCP tool, new mailer protocol, new account field, new migration). It explicitly asks agents to read it first, and to trust the code over the doc if they ever disagree. `PLAN.md` has the phase-by-phase implementation history and design-decision log; `PRD.MD` has product requirements/scope.
+**Read `ARCHITECTURE.md` before making non-trivial changes** — it is the authoritative, up-to-date technical reference (file-by-file layout, request lifecycles, data model, and step-by-step recipes for the change you're about to make: new REST endpoint, new MCP tool, new mailer protocol, new account field, new migration). It explicitly asks agents to read it first, and to trust the code over the doc if they ever disagree. `docs/API.md` and `docs/MCP_CLIENT_GUIDE.md` document the REST/MCP contracts, `CONTEXT.md` the domain vocabulary, and `docs/adr/` the design decisions.
 
 ## Commands
 
@@ -33,7 +33,7 @@ make docker-build && make docker-run  # local Docker dev loop
 scripts/release.sh <docker-amd64|docker-arm64|windows-amd64|all> [version]   # Git Bash/WSL/Linux/macOS/CI
 scripts\release.ps1 -Target <...> [-Version <...>]                          # native PowerShell, no Git Bash/WSL needed
 
-bash scripts/test.sh [--race] [--coverage]   # full dev gate — run before committing (see README "Cek lengkap sebelum commit")
+bash scripts/test.sh [--race] [--coverage]   # full dev gate — run before committing (see README "Full check before commit")
 scripts\test.ps1 [-Race] [-Coverage]         # same, native PowerShell
 ```
 
@@ -47,7 +47,7 @@ Five rules drive almost every structural decision:
 2. **Protocol logic is hidden behind interfaces** (`internal/mailer/types.go`: `Sender`, `Fetcher`, `Checker`, `Marker`, `FetcherChecker`, `FolderLister`), implemented in `internal/mailer/{smtp,imap,pop3}` and dispatched by `account.Service`. Nothing outside `internal/mailer/*` and `internal/app` imports a concrete protocol package.
 3. **REST and MCP are two thin adapters over the same `account.Service`** (`internal/api`, `internal/mcpserver`). There is exactly one implementation of each business operation (send/fetch/check/list folders) — if REST and MCP disagree, the bug is in one of the adapters, never in `Service`.
 4. **Domain models never leak secrets across a boundary.** `account.Account` has no plaintext password field; credentials live only in the encrypted `credentials` table via `Repository.Secret`. `internal/api/dto.go` and `mcpserver`'s `accountSummary` use separate request/response shapes from the domain model specifically to prevent a stray struct-literal typo from serializing a password.
-5. **The dashboard is a static client, not a third backend skin.** `internal/dashboard` embeds its HTML/CSS/JS and calls the same REST endpoints from the same origin — no `account.Service` access, no business logic, no privileged route. It is mounted outside the API-key middleware (`isAPIPath` in `internal/api/server.go`) because a page's asset requests cannot carry a header and hold no secrets; every API endpoint stays behind auth (ADR 0002, PRD §6.7).
+5. **The dashboard is a static client, not a third backend skin.** `internal/dashboard` embeds its HTML/CSS/JS and calls the same REST endpoints from the same origin — no `account.Service` access, no business logic, no privileged route. It is mounted outside the API-key middleware (`isAPIPath` in `internal/api/server.go`) because a page's asset requests cannot carry a header and hold no secrets; every API endpoint stays behind auth (ADR 0002).
 
 Build tag note: `cmd/xmail-tray/*.go` and `internal/winservice/*.go` are gated `//go:build windows && xmailtray` (a custom tag, not just `windows`), so plain `go build ./...` — including on Windows — never needs the tray/service-manager dependencies (`fyne.io/systray`, `kardianos/service`). Only `-tags xmailtray` pulls them in.
 

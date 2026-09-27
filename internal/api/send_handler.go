@@ -25,7 +25,7 @@ type sendRequest struct {
 	BodyHTML    string              `json:"body_html"`
 	Attachments []attachmentRequest `json:"attachments"`
 	// Headers are additional custom header lines (e.g. "X-Priority",
-	// "Reply-To") — see PRD.MD §6.2 "custom headers dasar".
+	// "Reply-To").
 	Headers map[string]string `json:"headers"`
 }
 
@@ -53,7 +53,7 @@ func (r sendRequest) toDomain() (mailer.OutgoingMessage, error) {
 	return msg, nil
 }
 
-// handleSend implements POST /accounts/{id}/send (see PLAN.md §3).
+// handleSend implements POST /accounts/{id}/send.
 func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	req, err := decodeJSON[sendRequest](r)

@@ -1,131 +1,127 @@
 # xmail
 
-Email-as-a-service backend: kirim & terima email lewat REST API dan MCP, multi-akun, TLS & non-TLS, storage SQLite.
+Email-as-a-service backend: send & receive email via REST API and MCP, multi-account, TLS & non-TLS, SQLite storage.
 
-Dokumen lengkap:
-- [PRD.MD](./PRD.MD) — requirement produk, scope, non-goals.
-- [PLAN.md](./PLAN.md) — rencana implementasi teknis: struktur project, skema DB, kontrak API/MCP, urutan kerja per fase, histori keputusan.
-- [PLAN-DASHBOARD.md](./PLAN-DASHBOARD.md) — rencana terpisah untuk fitur dashboard web manajemen akun (CRUD akun + uji konektivitas; PRD.MD §6.7).
-- [PLAN-FOLDERS.md](./PLAN-FOLDERS.md) — rencana terpisah untuk daftar folder IMAP (`GET /accounts/{id}/folders`, tool MCP `list_folders`) dan klasifikasi error folder (500 → 400).
-- [ARCHITECTURE.md](./ARCHITECTURE.md) — **referensi teknis codebase saat ini**: apa isinya, bagaimana kerjanya, dan cara menambah fitur. Ditulis supaya cepat dipahami manusia maupun LLM agent yang akan mengerjakan repo ini — mulai dari sini kalau mau langsung ubah/tambah kode.
-- [CODE_REVIEW.md](./CODE_REVIEW.md) — arsip hasil code review independen; resolusinya (fix apa untuk temuan apa) dicatat di PLAN.md §10.
-- [CONTEXT.md](./CONTEXT.md) — glosarium domain: istilah inti (Account, Message, Message cache, Coverage, Exhausted, Fetch window, dst) beserta istilah yang dihindari.
-- [docs/adr/](./docs/adr/) — Architecture Decision Records: keputusan arsitektur beserta alasannya (mulai dari ADR-0001 soal penyatuan dispatch protokol).
-- [docs/API.md](./docs/API.md) — **referensi REST API**: base URL & auth, envelope response, semua endpoint (request/response), kode error, dan contoh `curl`.
-- [docs/MCP_CLIENT_GUIDE.md](./docs/MCP_CLIENT_GUIDE.md) — **panduan MCP client**: cara menyambungkan Claude Code/Claude Desktop/custom client via Streamable HTTP atau stdio, referensi 5 tool, dan troubleshooting.
-- [docs/postman/](./docs/postman/) — koleksi Postman siap import (`xmail.postman_collection.json` + `xmail.postman_environment.json`).
+Documentation:
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — **technical reference for the current codebase**: what's in it, how it works, and how to add features. Written so both humans and LLM agents working on this repo can understand it fast — start here if you want to change/add code directly.
+- [CODE_REVIEW.md](./CODE_REVIEW.md) — archive of the independent code review results; the resolution (which fix for which finding) is recorded there.
+- [CONTEXT.md](./CONTEXT.md) — domain glossary: core terms (Account, Message, Message cache, Coverage, Exhausted, Fetch window, etc.) plus the terms to avoid.
+- [docs/adr/](./docs/adr/) — Architecture Decision Records: architecture decisions and their rationale (starting with ADR-0001 on unifying protocol dispatch).
+- [docs/API.md](./docs/API.md) — **REST API reference**: base URL & auth, response envelope, every endpoint (request/response), error codes, and `curl` examples.
+- [docs/MCP_CLIENT_GUIDE.md](./docs/MCP_CLIENT_GUIDE.md) — **MCP client guide**: how to connect Claude Code/Claude Desktop/custom clients via Streamable HTTP or stdio, reference for the 5 tools, and troubleshooting.
+- [docs/postman/](./docs/postman/) — ready-to-import Postman collection (`xmail.postman_collection.json` + `xmail.postman_environment.json`).
 
-Status saat ini: **semua fase (1-8) selesai & diverifikasi nyata** — core, SMTP, IMAP, POP3, MCP, hardening review, Windows tray+service, dan ketiga target rilis (Docker x64, Docker Armbian/arm64, Windows x64) sudah dibuild, dijalankan, dan di-smoke-test langsung (bukan cuma lolos compile). Repo juga sudah melalui beberapa putaran review independen (`CODE_REVIEW.md` — arsip lengkap tiap putaran; ringkasan resolusi per temuan di PLAN.md §10). Salah satu putaran menemukan 3 pelanggaran keras (terburuk: Windows Service yang di-install tidak akan pernah bisa start) — semuanya diperbaiki dengan regression test, bukan sekadar dicatat. Lihat PLAN.md §5 untuk detail tiap fase. Di luar fase inti itu, **Fase 10** (daftar folder IMAP: `GET /accounts/{id}/folders` + tool MCP `list_folders`, plus klasifikasi error folder 500→400) juga sudah selesai — lihat [PLAN-FOLDERS.md](./PLAN-FOLDERS.md).
+Current status: **all phases (1-8) complete & verified for real** — core, SMTP, IMAP, POP3, MCP, hardening review, Windows tray+service, and all three release targets (Docker x64, Docker Armbian/arm64, Windows x64) have been built, run, and smoke-tested directly (not just compiled successfully). The repo has also been through several rounds of independent review (`CODE_REVIEW.md` — full archive of every round; each finding's resolution is recorded there). One of those rounds found 3 hard violations (the worst: an installed Windows Service could never start) — all were fixed with regression tests, not merely recorded. Beyond those core phases, **Phase 10** (IMAP folder listing: `GET /accounts/{id}/folders` + MCP tool `list_folders`, plus the folder error classification 500→400) is also complete.
 
-## Fitur
+## Features
 
-- Multi-akun email dalam satu instance.
-- Kirim email via SMTP (TLS implicit, STARTTLS, atau non-TLS), dukung attachment & custom header (`X-Priority`, dll).
-- Fetch & cek email via IMAP (folder, unread count, attachment list, mark-as-read) dan POP3 (fetch sederhana).
-- Daftar folder IMAP (`GET /accounts/{id}/folders` / tool MCP `list_folders`) — tahu nama folder yang benar beserta atribut perannya (`\Sent`, `\Drafts`, …), tanpa menebak.
-- Fetch email **cache-first** — request pertama dial ke server & simpan ke SQLite, request berikutnya langsung dari cache (parameter `refresh=true` buat paksa ambil ulang dari server).
-- Kredensial akun dienkripsi (AES-256-GCM) sebelum disimpan di SQLite.
-- Expose operasi email sebagai MCP tools (`list_accounts`, `send_email`, `fetch_emails`, `check_new_emails`, `list_folders`) untuk AI agent seperti Claude Desktop/Claude Code.
-- **Dashboard web ringan untuk manajemen akun** — CRUD akun + uji konektivitas per protokol, disajikan dari binary yang sama (tanpa service/artefak tambahan). Lihat [Dashboard](#dashboard).
-- Single static binary (Go, tanpa CGO), image Docker kecil.
-- **3 varian rilis** dengan behavior identik: Docker x64, Docker Armbian (arm64), Windows x64 (system tray + bisa diinstall sebagai Windows Service). Lihat [Release / Instalasi](#release--instalasi).
+- Multiple email accounts in a single instance.
+- Send email via SMTP (implicit TLS, STARTTLS, or non-TLS), with attachment & custom header support (`X-Priority`, etc.).
+- Fetch & check email via IMAP (folders, unread count, attachment list, mark-as-read) and POP3 (simple fetch).
+- List IMAP folders (`GET /accounts/{id}/folders` / MCP tool `list_folders`) — know the correct folder names along with their role attributes (`\Sent`, `\Drafts`, …), without guessing.
+- **Cache-first** email fetching — the first request hits the server & saves to SQLite, subsequent requests come straight from the cache (`refresh=true` forces a re-fetch from the server).
+- Account credentials are encrypted (AES-256-GCM) before being stored in SQLite.
+- Expose email operations as MCP tools (`list_accounts`, `send_email`, `fetch_emails`, `check_new_emails`, `list_folders`) for AI agents such as Claude Desktop/Claude Code.
+- **Lightweight web dashboard for account management** — account CRUD + per-protocol connectivity test, served from the same binary (no extra service/artifact). See [Dashboard](#dashboard).
+- Single static binary (Go, no CGO), small Docker image.
+- **3 release variants** with identical behavior: Docker x64, Docker Armbian (arm64), Windows x64 (system tray + installable as a Windows Service). See [Release / Installation](#release--installation).
 
-## Struktur Project
+## Project Structure
 
 ```
-cmd/xmail/              entrypoint headless — dipakai Docker x64 & Docker Armbian (arm64)
+cmd/xmail/              entrypoint headless — used by Docker x64 & Docker Armbian (arm64)
 cmd/xmail-tray/          entrypoint Windows x64 — system tray + Windows Service (build tag: xmailtray)
-internal/app/            Run(ctx, cfg): wiring bersama, dipakai cmd/xmail DAN cmd/xmail-tray
-internal/winservice/     install/start/stop/uninstall sebagai Windows Service (build tag: xmailtray)
-internal/config/         load config dari environment variable
-internal/storage/        koneksi SQLite + migration
-internal/cryptox/        enkripsi/dekripsi kredensial (AES-GCM)
-internal/account/        model, repository, service akun email
-internal/mailer/         interface Sender/Fetcher/Checker/Marker/FolderLister
-internal/mailer/smtp/    implementasi kirim (SMTP)
-internal/mailer/imap/    implementasi fetch/check/folder (IMAP)
-internal/mailer/pop3/    implementasi fetch (POP3)
+internal/app/            Run(ctx, cfg): shared wiring, used by cmd/xmail AND cmd/xmail-tray
+internal/winservice/     install/start/stop/uninstall as a Windows Service (build tag: xmailtray)
+internal/config/         load config from environment variables
+internal/storage/        SQLite connection + migration
+internal/cryptox/        credential encryption/decryption (AES-GCM)
+internal/account/        email account model, repository, service
+internal/mailer/         Sender/Fetcher/Checker/Marker/FolderLister interface
+internal/mailer/smtp/    send implementation (SMTP)
+internal/mailer/imap/    fetch/check/folder implementation (IMAP)
+internal/mailer/pop3/    fetch implementation (POP3)
 internal/api/            REST API (router, middleware, handler)
-internal/dashboard/      dashboard web (aset HTML/CSS/JS di-embed + handler statis)
+internal/dashboard/      web dashboard (HTML/CSS/JS assets embedded + static handler)
 internal/mcpserver/      MCP server (expose tools)
-scripts/release.sh       build release 3 target → dist/ + checksums
-assets/icon.ico          icon tray Windows (placeholder)
+scripts/release.sh       build release for 3 targets → dist/ + checksums
+assets/icon.ico          Windows tray icon (placeholder)
 ```
 
-Detail tiap package, alasan desain, dan cara menambah kode baru (endpoint/tool/protokol) ada di **[ARCHITECTURE.md](./ARCHITECTURE.md)** — dokumen ini lebih lengkap & lebih up-to-date dibanding sketsa struktur di [PLAN.md §1](./PLAN.md#1-struktur-direktori).
+Details for each package, the design rationale, and how to add new code (endpoint/tool/protocol) are in **[ARCHITECTURE.md](./ARCHITECTURE.md)** — that document is more complete & more up-to-date than the project structure sketch above.
 
-## Requirement
+## Requirements
 
 - Go 1.26+
-- Docker (opsional, untuk build/run image)
+- Docker (optional, for building/running the image)
 
-## Menjalankan (development)
+## Running (development)
 
 ```bash
-# copy contoh env lalu isi
+# copy the example env, then fill it in
 cp .env.example .env
 
 go mod tidy
 make run
-# atau: go run ./cmd/xmail
+# or: go run ./cmd/xmail
 ```
 
-`.env` di-load otomatis (via `github.com/joho/godotenv`, dev-only) — env var asli yang sudah di-set (mis. dari Docker `-e`/`--env-file`) selalu menang, `.env` cuma fallback kalau belum ada.
+`.env` is loaded automatically (via `github.com/joho/godotenv`, dev-only) — real env vars that are already set (e.g. from Docker `-e`/`--env-file`) always win; `.env` is only a fallback when nothing is set.
 
 ### Environment Variables
 
-| Variable | Wajib | Deskripsi |
+| Variable | Required | Description |
 |---|---|---|
-| `XMAIL_LISTEN_ADDR` | tidak (default `:5569`) | Alamat listen HTTP API |
-| `XMAIL_DB_PATH` | tidak (default `xmail.db`) | Path file SQLite |
-| `XMAIL_ENCRYPTION_KEY` | **ya** | Base64 dari 32 byte random key, dipakai enkripsi kredensial akun. Generate: `openssl rand -base64 32` |
-| `XMAIL_API_KEY` | **ya** (MVP) | API key statis untuk auth header `X-API-Key` |
-| `XMAIL_MCP_STDIO` | tidak | Set `true` untuk expose MCP server lewat stdio transport |
+| `XMAIL_LISTEN_ADDR` | no (default `:5569`) | HTTP API listen address |
+| `XMAIL_DB_PATH` | no (default `xmail.db`) | SQLite file path |
+| `XMAIL_ENCRYPTION_KEY` | **yes** | Base64 of a random 32-byte key, used to encrypt account credentials. Generate: `openssl rand -base64 32` |
+| `XMAIL_API_KEY` | **yes** (MVP) | Static API key for the `X-API-Key` auth header |
+| `XMAIL_MCP_STDIO` | no | Set `true` to expose the MCP server over the stdio transport |
 
 ## Dashboard
 
-Binary yang sama menyajikan dashboard web untuk **manajemen akun** (CRUD + uji konektivitas). Tidak ada proses atau artefak tambahan — asetnya di-embed ke binary.
+The same binary serves a web dashboard for **account management** (CRUD + connectivity test). There's no extra process or artifact — the assets are embedded into the binary.
 
-- **Buka**: `http://localhost:5569` (atau `http://<XMAIL_LISTEN_ADDR>`) di browser. Dari tray Windows, menu **Open dashboard** membuka URL ini.
-- **Masuk**: masukkan nilai `XMAIL_API_KEY`. Key disimpan di `sessionStorage` browser (hilang saat tab ditutup) dan dikirim sebagai header `X-API-Key` pada tiap request — **key yang sama** dengan REST API/MCP.
-- **Yang bisa dilakukan**: list/detail/create/edit/hapus akun, dan uji koneksi SMTP/IMAP/POP3 per akun.
-- **Yang tidak ada di dashboard**: kirim email, fetch/baca pesan, dan daftar folder — jalur email tetap lewat REST API/MCP.
+- **Open**: `http://localhost:5569` (or `http://<XMAIL_LISTEN_ADDR>`) in a browser. From the Windows tray, the **Open dashboard** menu item opens this URL.
+- **Sign in**: enter the `XMAIL_API_KEY` value. The key is stored in the browser's `sessionStorage` (lost when the tab is closed) and sent as the `X-API-Key` header on every request — **the same key** as the REST API/MCP.
+- **What you can do**: list/detail/create/edit/delete accounts, and test SMTP/IMAP/POP3 connectivity per account.
+- **What the dashboard doesn't have**: sending email, fetching/reading messages, and listing folders — the email path still goes through the REST API/MCP.
 
-Dashboard tidak menambah hak akses: aset statis (`GET /`) memang tanpa auth karena tidak memuat rahasia, tapi semua endpoint API tetap wajib `X-API-Key` (lihat [docs/API.md](./docs/API.md) §3). Karena disajikan same-origin, tidak ada CORS. Respons dashboard diberi CSP `default-src 'self'`.
+The dashboard doesn't add any access rights: static assets (`GET /`) are indeed unauthenticated because they hold no secrets, but every API endpoint still requires `X-API-Key` (see [docs/API.md](./docs/API.md) §3). Because it's served same-origin, there's no CORS. Dashboard responses are given a `default-src 'self'` CSP.
 
-**Perhatian**: bila `XMAIL_LISTEN_ADDR` tidak di-bind ke loopback (mis. `0.0.0.0:5569`), dashboard & API bisa dijangkau dari jaringan — siapa pun yang memegang API key bisa mengelola akun. Batasi akses jaringan/firewall sesuai kebutuhan.
+**Caution**: if `XMAIL_LISTEN_ADDR` is not bound to loopback (e.g. `0.0.0.0:5569`), the dashboard & API can be reached from the network — anyone holding the API key can manage accounts. Restrict network/firewall access as needed.
 
-## Menjalankan via Docker (development)
+## Running via Docker (development)
 
 ```bash
 make docker-build
 make docker-run
 ```
 
-Data SQLite disimpan di volume `xmail-data` (mount ke `/app/data` di container) supaya persist antar restart.
+SQLite data is stored in the `xmail-data` volume (mounted to `/app/data` in the container) so it persists across restarts.
 
-## Release / Instalasi
+## Release / Installation
 
-Ada 3 target rilis, semuanya lewat `internal/app.Run` yang sama (lihat [PLAN.md](./PLAN.md#01-tiga-target-rilis)) supaya behavior konsisten. Semua artefak dibangun oleh script, keluar ke `dist/` lengkap dengan `SHA256SUMS.txt`. Ada **2 versi script yang fungsinya sama persis** — pakai salah satu sesuai shell yang tersedia:
+There are 3 release targets, all going through the same `internal/app.Run` so behavior stays consistent. All artifacts are built by a script, landing in `dist/` complete with `SHA256SUMS.txt`. There are **2 script versions with exactly the same functionality** — use whichever one matches the shell you have available:
 
-| Script | Jalankan dari | Kapan pakai |
+| Script | Run from | When to use |
 |---|---|---|
-| [`scripts/release.sh`](./scripts/release.sh) | Git Bash / WSL / Linux / macOS | Sudah ada Git for Windows (paling umum di mesin dev), atau WSL/Linux/macOS/CI |
-| [`scripts/release.ps1`](./scripts/release.ps1) | PowerShell (native Windows) | **Windows tanpa Git Bash/WSL** — tidak butuh `bash`, `make`, atau tool Unix apapun |
+| [`scripts/release.sh`](./scripts/release.sh) | Git Bash / WSL / Linux / macOS | Git for Windows is already installed (most common on dev machines), or WSL/Linux/macOS/CI |
+| [`scripts/release.ps1`](./scripts/release.ps1) | PowerShell (native Windows) | **Windows without Git Bash/WSL** — needs no `bash`, `make`, or any Unix tool |
 
 ```bash
 # Git Bash / WSL / Linux / macOS
 scripts/release.sh <target> [version]   # target: docker-amd64 | docker-arm64 | windows-amd64 | all
-scripts/release.sh all v0.1.0           # atau: make release-all VERSION=v0.1.0
+scripts/release.sh all v0.1.0           # or: make release-all VERSION=v0.1.0
 ```
 
 ```powershell
-# PowerShell native (Windows tanpa Git Bash/WSL)
-scripts\release.ps1 -Target <target> [-Version <versi>]
+# PowerShell native (Windows without Git Bash/WSL)
+scripts\release.ps1 -Target <target> [-Version <version>]
 scripts\release.ps1 -Target all -Version v0.1.0
 ```
 
-Detail cara kerja script & cara menambah target baru ada di [ARCHITECTURE.md § Build & Release](./ARCHITECTURE.md#6-build--release). `make release-*` cuma alias singkat untuk `release.sh` — kalau tidak punya `make` (default di Windows polos), langsung pakai `release.ps1` atau `release.sh` saja.
+How the script works & how to add a new target is in [ARCHITECTURE.md § Build & Release](./ARCHITECTURE.md#6-build--release). `make release-*` is just a short alias for `release.sh` — if you don't have `make` (the default on plain Windows), use `release.ps1` or `release.sh` directly.
 
 ### 1. Docker x64 (`linux/amd64`)
 
@@ -137,7 +133,7 @@ docker run -d -p 5569:5569 -v xmail-data:/app/data --env-file .env xmail:<versio
 
 ### 2. Docker Armbian (`linux/arm64`)
 
-Untuk SBC ARM yang jalan Armbian (Orange Pi, Rock Pi, dst). Bisa di-build cross-platform dari mesin x64 lewat `docker buildx`, atau langsung di board-nya.
+For ARM SBCs running Armbian (Orange Pi, Rock Pi, etc.). It can be cross-built from an x64 machine via `docker buildx`, or built right on the board.
 
 ```bash
 scripts/release.sh docker-arm64
@@ -151,78 +147,78 @@ docker run -d -p 5569:5569 -v xmail-data:/app/data --env-file .env xmail:<versio
 scripts/release.sh windows-amd64          # via Git Bash/WSL
 ```
 ```powershell
-scripts\release.ps1 -Target windows-amd64  # via PowerShell native, tanpa Git Bash/WSL
+scripts\release.ps1 -Target windows-amd64  # via native PowerShell, without Git Bash/WSL
 ```
-Hasil kedua-duanya sama: `dist/xmail-tray-windows-amd64-<version>.exe` (sudah dites jalan lewat kedua cara).
+Both produce the same result: `dist/xmail-tray-windows-amd64-<version>.exe` (tested working via both routes).
 
-Jalankan `.exe`-nya — muncul icon di system tray. Dari menu tray bisa:
-- **Start / Stop** — jalankan/hentikan service di foreground (selama tray app dibuka).
-- **Install as Windows Service** — daftarkan diri sebagai Windows Service (`XmailService`) supaya tetap jalan di background tanpa perlu login/tray terbuka; muncul di `services.msc`.
-- **Uninstall** — hapus Windows Service.
-- **Open dashboard** — buka `http://<listen_addr>` di browser default.
+Run the `.exe` — an icon appears in the system tray. From the tray menu you can:
+- **Start / Stop** — run/stop the service in the foreground (while the tray app is open).
+- **Install as Windows Service** — register itself as a Windows Service (`XmailService`) so it keeps running in the background without needing a login/open tray; it shows up in `services.msc`.
+- **Uninstall** — remove the Windows Service.
+- **Open dashboard** — open `http://<listen_addr>` in the default browser.
 
-#### Kalau `.exe` di-double-click tapi "tidak terjadi apa-apa"
+#### If the `.exe` is double-clicked but "nothing happens"
 
-Gejala: tidak ada icon tray, tidak ada entri di Task Manager, tidak ada di `services.msc`, tidak ada log. Penyebab paling umum: **konfigurasi belum ada**, jadi proses berhenti di detik pertama dengan `XMAIL_API_KEY is required` — dan karena build rilis ini `windowsgui` (tanpa console), error itu sebelumnya tidak terlihat di mana pun.
+Symptom: no tray icon, no entry in Task Manager, nothing in `services.msc`, no log. The most common cause: **the configuration doesn't exist yet**, so the process exits in the first second with `XMAIL_API_KEY is required` — and because this release build is `windowsgui` (no console), that error previously wasn't visible anywhere.
 
-Sekarang kegagalan start selalu meninggalkan jejak:
+Now a failed start always leaves a trace:
 
-- **Dialog error** muncul saat ada user yang bisa melihatnya, berisi apa yang harus dibuat (di-skip kalau `XMAIL_NO_DIALOG=1`).
-- **Log file**: `%LOCALAPPDATA%\xmail\xmail-tray.log` (mis. `C:\Users\<kamu>\AppData\Local\xmail\xmail-tray.log`) — cek ini dulu.
+- **Error dialog** appears when there's a user who can see it, containing what needs to be created (skipped if `XMAIL_NO_DIALOG=1`).
+- **Log file**: `%LOCALAPPDATA%\xmail\xmail-tray.log` (e.g. `C:\Users\<you>\AppData\Local\xmail\xmail-tray.log`) — check this first.
 
-Yang dibutuhkan supaya bisa jalan: `XMAIL_API_KEY` dan `XMAIL_ENCRYPTION_KEY`. Cara termudah: buat file `.env` **di folder yang sama dengan `xmail.exe`** (bukan di root repo) — `.env` dibaca dari working directory, dan untuk exe yang di-double-click artinya folder exe itu sendiri:
+What's needed for it to run: `XMAIL_API_KEY` and `XMAIL_ENCRYPTION_KEY`. Easiest way: create a `.env` file **in the same folder as `xmail.exe`** (not in the repo root) — `.env` is read from the working directory, and for a double-clicked exe that means the exe's own folder:
 
 ```ini
-XMAIL_API_KEY=kunci-pilihanmu
-XMAIL_ENCRYPTION_KEY=<hasil dari: openssl rand -base64 32>
+XMAIL_API_KEY=your-chosen-key
+XMAIL_ENCRYPTION_KEY=<output of: openssl rand -base64 32>
 ```
 
-Dua catatan supaya tidak salah duga:
-- Saat berjalan normal pun, tray app tidak muncul di daftar **Apps** Task Manager (tidak punya window biasa) — lihat tab **Details**.
-- Setelah icon tray muncul, server **belum** jalan sampai kamu klik **Start**, atau install sebagai Windows Service. Sebelum itu, "Open dashboard" akan membuka port yang masih tertutup.
+Two notes so you don't misdiagnose:
+- Even when running normally, the tray app doesn't show up in Task Manager's **Apps** list (it has no regular window) — look at the **Details** tab.
+- After the tray icon appears, the server is **not** running yet until you click **Start**, or install it as a Windows Service. Before that, "Open dashboard" opens a port that is still closed.
 
-> Status: target Windows tray **sudah diimplementasikan dan diverifikasi jalan** (lihat PLAN.md Fase 7) — `make release-windows-amd64` menghasilkan `.exe` yang sudah dites benar-benar berjalan (tray icon + menu render tanpa error). Satu hal yang **belum** divalidasi otomatis: klik "Install as Windows Service" beneran (sengaja tidak dieksekusi otomatis karena itu perubahan level-sistem yang butuh Administrator — jalankan manual dan cek `services.msc`/`sc query XmailService` sebelum rilis). Icon di `cmd/xmail-tray/icon.ico` masih placeholder (digenerate programatik) — ganti dengan aset final kapan pun sebelum rilis publik.
+> Status: the Windows tray target **is already implemented and verified running** — `make release-windows-amd64` produces an `.exe` that has been tested actually running (tray icon + menu rendering without errors). One thing is **not** automatically validated: actually clicking "Install as Windows Service" (deliberately not executed automatically because it's a system-level change that needs Administrator — run it manually and check `services.msc`/`sc query XmailService` before release). The icon at `cmd/xmail-tray/icon.ico` is still a placeholder (generated programmatically) — replace it with the final asset at any point before a public release.
 
 ## Testing
 
-Strategi lengkap (piramida unit → integration → contract → race/static → manual per-target-rilis) ada di [PLAN.md §6](./PLAN.md#6-testing-strategy). Ringkasnya:
+The full strategy is a pyramid: unit → integration → contract → race/static → manual per release target. In summary:
 
 ```bash
-make test               # unit test saja — cepat, tanpa network/docker, wajib hijau tiap fase
-make test-integration   # + integration test (tag "integration"): in-process fake SMTP/IMAP/POP3 server
-make test-race          # + race detector (-race), wajib sebelum build image/release
-make coverage           # laporan coverage per fungsi (go tool cover)
+make test               # unit tests only — fast, no network/docker, must be green every phase
+make test-integration   # + integration tests (tag "integration"): in-process fake SMTP/IMAP/POP3 servers
+make test-race          # + race detector (-race), required before image/release builds
+make coverage           # per-function coverage report (go tool cover)
 
-make test-all           # SEMUA cek sekaligus (lihat di bawah)
+make test-all           # ALL checks at once (see below)
 ```
 
-### Cek lengkap sebelum commit
+### Full check before commit
 
-Ada **dua script setara** (seperti `release.sh`/`release.ps1`) yang menjalankan seluruh verifikasi dev secara berurutan dan berhenti di kegagalan pertama:
+There are **two equivalent scripts** (like `release.sh`/`release.ps1`) that run the entire dev verification suite in sequence and stop at the first failure:
 
-| Script | Jalankan dari | Kapan pakai |
+| Script | Run from | When to use |
 |---|---|---|
-| [`scripts/test.sh`](./scripts/test.sh) | Git Bash / WSL / Linux / macOS / CI | ada Git Bash/WSL/macOS/Linux |
-| [`scripts/test.ps1`](./scripts/test.ps1) | PowerShell (native Windows) | **Windows tanpa Git Bash/WSL** — tidak butuh `bash`/`make` |
+| [`scripts/test.sh`](./scripts/test.sh) | Git Bash / WSL / Linux / macOS / CI | you have Git Bash/WSL/macOS/Linux |
+| [`scripts/test.ps1`](./scripts/test.ps1) | PowerShell (native Windows) | **Windows without Git Bash/WSL** — needs no `bash`/`make` |
 
 ```bash
-bash scripts/test.sh                  # semua cek
-bash scripts/test.sh --race           # + race detector (butuh cgo/gcc)
-bash scripts/test.sh --coverage       # + laporan coverage
-bash scripts/test.sh --help           # daftar flag
+bash scripts/test.sh                  # all checks
+bash scripts/test.sh --race           # + race detector (needs cgo/gcc)
+bash scripts/test.sh --coverage       # + coverage report
+bash scripts/test.sh --help           # list of flags
 ```
 
 ```powershell
-scripts\test.ps1                 # semua cek
+scripts\test.ps1                 # all checks
 scripts\test.ps1 -Race -Coverage
 ```
 
-Catatan: di git kedua script tersimpan sebagai mode `100644` (sama seperti `scripts/release.sh`), jadi panggil lewat `bash <script>` — atau `chmod +x scripts/*.sh` sekali kalau mau memanggilnya langsung.
+Note: in git both scripts are stored with mode `100644` (same as `scripts/release.sh`), so call them via `bash <script>` — or run `chmod +x scripts/*.sh` once if you want to invoke them directly.
 
-Yang dijalankan: `gofmt` (deteksi format), `go mod tidy -diff` (drift go.mod/go.sum), `go vet`, `go build`, cek kompilasi tray+service (`GOOS=windows -tags xmailtray`, jadi ikut jalan di Linux/macOS), unit test, integration test, test `internal/winservice` + `cmd/xmail-tray` (hanya di host Windows), dan `node --check` untuk `app.js` dashboard (kalau `node` tersedia). Race detector bersifat opt-in karena butuh cgo/gcc (PLAN.md §6.4). `make test-all` cuma alias tipis untuk `scripts/test.sh`.
+What runs: `gofmt` (format check), `go mod tidy -diff` (go.mod/go.sum drift), `go vet`, `go build`, the tray+service compile check (`GOOS=windows -tags xmailtray`, so it also runs on Linux/macOS), unit tests, integration tests, tests for `internal/winservice` + `cmd/xmail-tray` (only on a Windows host), and `node --check` for the dashboard's `app.js` (if `node` is available). The race detector is opt-in because it needs cgo/gcc. `make test-all` is just a thin alias for `scripts/test.sh`.
 
-Tidak pakai `testify`/framework tambahan — stdlib `testing` + table-driven test saja, sejalan dengan prinsip project ini yang minim dependency. Untuk checklist manual/E2E tiap target rilis (Docker x64, Docker Armbian, Windows tray+service), lihat PLAN.md §6.5.
+No `testify`/extra framework — just the stdlib `testing` + table-driven tests, in line with this project's minimal-dependency principle. There is also a manual/E2E checklist for each release target (Docker x64, Docker Armbian, Windows tray+service).
 
-## Kontribusi / Urutan Kerja
+## Contributing / Work Order
 
-Ikuti fase di [PLAN.md §5](./PLAN.md#5-urutan-kerja-fase) secara berurutan: Fase 1 (Core) → Fase 2 (SMTP) → Fase 3 (IMAP) → Fase 4 (POP3) → Fase 5 (MCP) → Fase 6 (Docker & Hardening) → Fase 7 (Windows Tray & Service) → Fase 8 (Release Packaging 3 target), lalu Fase 10 (Daftar folder IMAP — [PLAN-FOLDERS.md](./PLAN-FOLDERS.md)). Setiap fase punya langkah verifikasi sendiri di PLAN.md.
+Follow the phases in order: Phase 1 (Core) → Phase 2 (SMTP) → Phase 3 (IMAP) → Phase 4 (POP3) → Phase 5 (MCP) → Phase 6 (Docker & Hardening) → Phase 7 (Windows Tray & Service) → Phase 8 (Release Packaging, 3 targets), then Phase 10 (IMAP folder listing). Each phase has its own verification steps.

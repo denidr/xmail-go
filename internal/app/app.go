@@ -5,8 +5,7 @@
 //   - cmd/xmail-tray   (Windows x64 — system tray + Windows Service)
 //
 // Keeping this logic here (instead of duplicated in each cmd/) means the
-// two distribution targets can never drift in behavior. See PLAN.md
-// Fase 1 and the "Release Build" section.
+// two distribution targets can never drift in behavior.
 package app
 
 import (
@@ -94,11 +93,10 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 }
 
 // wireMailer plugs each protocol's mailer implementation into svc as
-// it becomes available (Fase 2: SMTP, Fase 3: IMAP, Fase 4: POP3) —
-// see PLAN.md §1 design principle: svc only ever depends on the
-// mailer/account interfaces, never on the concrete protocol packages
-// directly, so callers (internal/api, internal/mcpserver) stay
-// protocol-agnostic.
+// it becomes available (SMTP, IMAP, POP3) — svc only ever depends on
+// the mailer/account interfaces, never on the concrete protocol
+// packages directly, so callers (internal/api, internal/mcpserver)
+// stay protocol-agnostic.
 func wireMailer(svc *account.Service) {
 	svc.RegisterProtocol(account.ProtocolSMTP, account.Protocol{
 		Sender: func(cfg account.ConnectionConfig, fromAddress, username, secret string) mailer.Sender {

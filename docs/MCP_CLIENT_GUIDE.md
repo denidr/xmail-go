@@ -1,32 +1,31 @@
-# xmail — Panduan MCP Client
+# xmail — MCP Client Guide
 
-Panduan lengkap menghubungkan **MCP client** (Claude Code, Claude Desktop, Cursor, atau agent/custom client) ke xmail, sehingga agent dapat memakai tool email (`list_accounts`, `send_email`, `fetch_emails`, `check_new_emails`, `list_folders`) langsung dari percakapan.
+Complete guide to connecting an **MCP client** (Claude Code, Claude Desktop, Cursor, or an agent/custom client) to xmail, so an agent can use the email tools (`list_accounts`, `send_email`, `fetch_emails`, `check_new_emails`, `list_folders`) directly from the conversation.
 
-Implementasi: `internal/mcpserver/server.go` (library `github.com/mark3labs/mcp-go`). Kelima tool tersebut **memanggil `account.Service` yang sama** dengan REST API — jadi MCP dan REST tidak bisa berbeda data (satu sumber logika). Lihat [`ARCHITECTURE.md §1`](../ARCHITECTURE.md).
+Implementation: `internal/mcpserver/server.go` (library `github.com/mark3labs/mcp-go`). All five tools **call the same `account.Service`** as the REST API — so MCP and REST cannot diverge in data (a single source of logic). See [`ARCHITECTURE.md §1`](../ARCHITECTURE.md).
 
-- Referensi REST API: [`docs/API.md`](./API.md).
-- Kontrak tool ringkas: [`PLAN.md §4`](../PLAN.md).
+- REST API reference: [`docs/API.md`](./API.md).
 
-**Daftar isi**
+**Table of contents**
 
-1. [Ringkasan & arsitektur](#1-ringkasan--arsitektur)
-2. [Perbandingan transport](#2-perbandingan-transport)
-3. [Prasyarat](#3-prasyarat)
+1. [Overview & architecture](#1-overview--architecture)
+2. [Transport comparison](#2-transport-comparison)
+3. [Prerequisites](#3-prerequisites)
 4. [Transport 1 — Streamable HTTP](#4-transport-1--streamable-http)
 5. [Transport 2 — stdio](#5-transport-2--stdio)
-6. [Contoh client (Go)](#6-contoh-client-go)
-7. [Alur sesi & JSON-RPC lengkap](#7-alur-sesi--json-rpc-lengkap)
-8. [Referensi tool (schema + output)](#8-referensi-tool-schema--output)
+6. [Example client (Go)](#6-example-client-go)
+7. [Session flow & full JSON-RPC](#7-session-flow--full-json-rpc)
+8. [Tool reference (schema + output)](#8-tool-reference-schema--output)
 9. [Error handling](#9-error-handling)
-10. [Keamanan](#10-keamanan)
-11. [Uji dengan MCP Inspector](#11-uji-dengan-mcp-inspector)
-12. [Pemetaan MCP ↔ REST](#12-pemetaan-mcp--rest)
-13. [Batasan & catatan](#13-batasan--catatan)
+10. [Security](#10-security)
+11. [Testing with MCP Inspector](#11-testing-with-mcp-inspector)
+12. [MCP ↔ REST mapping](#12-mcp--rest-mapping)
+13. [Limitations & notes](#13-limitations--notes)
 14. [Troubleshooting](#14-troubleshooting)
 
 ---
 
-## 1. Ringkasan & arsitektur
+## 1. Overview & architecture
 
 ```
                  ┌─────────────────────────────┐
@@ -35,8 +34,8 @@ Implementasi: `internal/mcpserver/server.go` (library `github.com/mark3labs/mcp-
                                                    ▼
                  ┌─────────────────────────────┐  ┌────────────────────┐
    MCP client ──▶│  internal/mcpserver         │─▶│  account.Service   │
-   (HTTP /mcp    │  (tools: 5)                 │  │  (satu logika)      │
-    atau stdio)  └─────────────────────────────┘  └─────────┬──────────┘
+   (HTTP /mcp    │  (tools: 5)                 │  │  (single logic)    │
+      or stdio)  └─────────────────────────────┘  └─────────┬──────────┘
                                                             │
                                     ┌───────────────────────┼───────────────────┐
                                     ▼                       ▼                   ▼
@@ -45,37 +44,37 @@ Implementasi: `internal/mcpserver/server.go` (library `github.com/mark3labs/mcp-
                                     └──────────────┬────────┴───────────────────┘
                                                    ▼
                                             SQLite (accounts,
-                                            credentials terenkripsi,
+                                            encrypted credentials,
                                             messages_cache)
 ```
 
-Poin penting:
+Key points:
 
-- Endpoint MCP **Streamable HTTP** di-mount di `/mcp` pada **HTTP server yang sama** dengan REST (satu port, satu auth) — bukan port terpisah.
-- **stdio** opsional, aktif bila `XMAIL_MCP_STDIO=true`; xmail dijalankan sebagai subprocess oleh client.
-- `serverInfo.name` = `xmail`; `serverInfo.version` = versi build xmail yang asli (di-stamp saat rilis, bukan angka hardcoded).
+- The MCP **Streamable HTTP** endpoint is mounted at `/mcp` on the **same HTTP server** as REST (one port, one auth) — not a separate port.
+- **stdio** is optional, enabled when `XMAIL_MCP_STDIO=true`; xmail is run as a subprocess by the client.
+- `serverInfo.name` = `xmail`; `serverInfo.version` = the real xmail build version (stamped at release, not a hardcoded number).
 
-## 2. Perbandingan transport
+## 2. Transport comparison
 
-| Aspek | Streamable HTTP | stdio |
+| Aspect | Streamable HTTP | stdio |
 |---|---|---|
-| Aktivasi | selalu aktif | `XMAIL_MCP_STDIO=true` |
-| Cara client konek | URL `http://<host>:<port>/mcp` | client spawn binary xmail |
-| Auth | header `X-API-Key` per request | in-process (tanpa header); proses tetap butuh env untuk start |
-| Server HTTP tetap jalan | ya | ya (set `XMAIL_LISTEN_ADDR` berbeda bila perlu) |
-| Cocok untuk | remote server, banyak client, Claude Code | desktop app (Claude Desktop), instance lokal |
+| Activation | always on | `XMAIL_MCP_STDIO=true` |
+| How the client connects | URL `http://<host>:<port>/mcp` | the client spawns the xmail binary |
+| Auth | `X-API-Key` header per request | in-process (no header); the process still needs env vars to start |
+| HTTP server still runs | yes | yes (set a different `XMAIL_LISTEN_ADDR` if needed) |
+| Good for | remote servers, many clients, Claude Code | desktop apps (Claude Desktop), local instances |
 | Session | stateless | in-process |
-| Bagikan DB dengan REST | ya | ya |
+| Shares DB with REST | yes | yes |
 
-## 3. Prasyarat
+## 3. Prerequisites
 
-1. xmail berjalan (`make run`, `go run ./cmd/xmail`, binary, atau Docker). Lihat [`README.MD`](../README.MD).
-2. Env wajib (server menolak start bila kosong):
-   - `XMAIL_API_KEY` — untuk header `X-API-Key`.
-   - `XMAIL_ENCRYPTION_KEY` — base64 dari 32 byte (`openssl rand -base64 32`).
-3. Untuk HTTP: port dari `XMAIL_LISTEN_ADDR` (default `:5569`).
+1. xmail is running (`make run`, `go run ./cmd/xmail`, a binary, or Docker). See [`README.MD`](../README.MD).
+2. Required env vars (the server refuses to start if they are empty):
+   - `XMAIL_API_KEY` — for the `X-API-Key` header.
+   - `XMAIL_ENCRYPTION_KEY` — base64 of 32 bytes (`openssl rand -base64 32`).
+3. For HTTP: the port from `XMAIL_LISTEN_ADDR` (default `:5569`).
 
-Verifikasi:
+Verification:
 
 ```bash
 curl -s http://localhost:5569/healthz
@@ -86,35 +85,35 @@ curl -s http://localhost:5569/healthz
 
 **Endpoint:** `POST http://<host>:<port>/mcp`
 
-Karakteristik:
+Characteristics:
 
-- Route `/mcp` ada di belakang middleware API-key yang sama dengan REST → **setiap request wajib** menyertakan `X-API-Key` (hanya `/healthz` yang bebas auth).
-- Transport **stateless**: tidak perlu mengelola `Mcp-Session-Id`.
-- Header `Accept` harus memuat `application/json` **dan/atau** `text/event-stream`; server bisa membalas JSON biasa atau SSE.
+- The `/mcp` route sits behind the same API-key middleware as REST → **every request must** include `X-API-Key` (only `/healthz` is auth-free).
+- **Stateless** transport: no need to manage `Mcp-Session-Id`.
+- The `Accept` header must contain `application/json` **and/or** `text/event-stream`; the server may reply with plain JSON or SSE.
 
 ### 4.1 Claude Code
 
 ```bash
-# transport HTTP
+# HTTP transport
 claude mcp add --transport http xmail http://localhost:5569/mcp \
   --header "X-API-Key: $XMAIL_API_KEY"
 
-# verifikasi
+# verify
 claude mcp list
 ```
 
-Default scope bersifat lokal ke project. Tambahkan `--scope user` bila ingin tersedia di semua project:
+The default scope is local to the project. Add `--scope user` if you want it available in all projects:
 
 ```bash
 claude mcp add --scope user --transport http xmail http://localhost:5569/mcp \
   --header "X-API-Key: $XMAIL_API_KEY"
 ```
 
-Setelah terhubung, di sesi Claude Code cukup minta secara natural, mis. "pakai xmail untuk list akun", "kirim email ke bob@example.com", atau cek status server dengan `/mcp`.
+Once connected, in a Claude Code session just ask naturally, e.g. "use xmail to list accounts", "send an email to bob@example.com", or check the server status with `/mcp`.
 
-### 4.2 Konfigurasi JSON generik
+### 4.2 Generic JSON configuration
 
-Banyak client membaca config `mcpServers`:
+Many clients read the `mcpServers` config:
 
 ```json
 {
@@ -130,11 +129,11 @@ Banyak client membaca config `mcpServers`:
 }
 ```
 
-> Nama field bervariasi antar-client (`type`: `http` vs `streamable-http`; `headers` vs `httpHeaders`). Yang wajib benar: **URL** dan **header `X-API-Key`**.
+> Field names vary between clients (`type`: `http` vs `streamable-http`; `headers` vs `httpHeaders`). What must be correct: the **URL** and the **`X-API-Key` header**.
 
 ### 4.3 Claude Desktop (remote via `mcp-remote`)
 
-Claude Desktop lebih umum memakai stdio (bagian 5), tapi endpoint HTTP bisa dijembatani:
+Claude Desktop more commonly uses stdio (section 5), but the HTTP endpoint can be bridged:
 
 ```json
 {
@@ -153,9 +152,9 @@ Claude Desktop lebih umum memakai stdio (bagian 5), tapi endpoint HTTP bisa dije
 }
 ```
 
-### 4.4 Uji manual via `curl` (JSON-RPC)
+### 4.4 Manual testing via `curl` (JSON-RPC)
 
-Lihat contoh request/response lengkap di [bagian 7](#7-alur-sesi--json-rpc-lengkap). Ringkasnya:
+See the full request/response example in [section 7](#7-session-flow--full-json-rpc). In short:
 
 ```bash
 curl -s -X POST http://localhost:5569/mcp \
@@ -167,13 +166,13 @@ curl -s -X POST http://localhost:5569/mcp \
         "clientInfo":{"name":"curl","version":"0.0.0"}}}'
 ```
 
-Bila balasan bertipe `text/event-stream`, payload JSON-RPC ada pada baris yang diawali `data:`.
+If the reply is of type `text/event-stream`, the JSON-RPC payload is on the line starting with `data:`.
 
 ## 5. Transport 2 — stdio
 
-Aktifkan dengan `XMAIL_MCP_STDIO=true`. xmail membaca/menulis protokol MCP lewat **stdin/stdout** proses, sementara log server tetap ke **stderr** (jadi tidak mengotori stream MCP). Client tinggal menjalankan binary xmail.
+Enable it with `XMAIL_MCP_STDIO=true`. xmail reads/writes the MCP protocol over the process's **stdin/stdout**, while server logs still go to **stderr** (so they don't pollute the MCP stream). The client just runs the xmail binary.
 
-Alur: client spawn proses → kirim `initialize` lewat stdin → terima response lewat stdout → dst.
+Flow: the client spawns the process → sends `initialize` over stdin → receives the response over stdout → and so on.
 
 ### 5.1 Claude Desktop (`claude_desktop_config.json`)
 
@@ -216,13 +215,13 @@ Linux / macOS:
 ```
 
 Tips:
-- Set `XMAIL_LISTEN_ADDR` ke port berbeda (`:5570`) bila instance REST lain sudah memakai `:5569`, agar tidak bentrok.
-- `XMAIL_API_KEY` & `XMAIL_ENCRYPTION_KEY` tetap wajib — tanpa itu proses xmail langsung gagal start (lihat [troubleshooting](#14-troubleshooting)).
-- Gunakan `XMAIL_DB_PATH` absolut supaya tidak bergantung working directory client.
+- Set `XMAIL_LISTEN_ADDR` to a different port (`:5570`) if another REST instance is already using `:5569`, to avoid a clash.
+- `XMAIL_API_KEY` & `XMAIL_ENCRYPTION_KEY` are still required — without them the xmail process fails to start immediately (see [troubleshooting](#14-troubleshooting)).
+- Use an absolute `XMAIL_DB_PATH` so it doesn't depend on the client's working directory.
 
 ### 5.2 Docker (stdio)
 
-Mode interaktif tanpa TTY agar stdin tetap dipakai protokol:
+Interactive mode without a TTY so stdin stays available for the protocol:
 
 ```bash
 docker run --rm -i \
@@ -233,9 +232,9 @@ docker run --rm -i \
   xmail:<version>-amd64
 ```
 
-## 6. Contoh client (Go)
+## 6. Example client (Go)
 
-Mengikuti pola test transport xmail (`internal/mcpserver/server_test.go`, `dialMCP`) — sudah terverifikasi terhadap server ini:
+Following xmail's transport test pattern (`internal/mcpserver/server_test.go`, `dialMCP`) — already verified against this server:
 
 ```go
 package main
@@ -282,8 +281,8 @@ func main() {
             Arguments: map[string]any{
                 "account_id": "3f2b...",
                 "to":         []string{"bob@example.com"},
-                "subject":    "Halo dari agent",
-                "body_text":  "Dikirim lewat MCP.",
+                "subject":    "Hello from the agent",
+                "body_text":  "Sent via MCP.",
             },
         },
     })
@@ -294,16 +293,16 @@ func main() {
 }
 ```
 
-## 7. Alur sesi & JSON-RPC lengkap
+## 7. Session flow & full JSON-RPC
 
-Urutan yang diharapkan:
+Expected order:
 
 ```
-1. initialize                 -> server balas capabilities + serverInfo
-2. notifications/initialized  -> notifikasi (tanpa response)
-3. tools/list                 -> daftar tool + JSON schema
-4. tools/call                 -> panggil tool
-   (ulang 3/4 sesuai kebutuhan)
+1. initialize                 -> server replies with capabilities + serverInfo
+2. notifications/initialized  -> notification (no response)
+3. tools/list                 -> tool list + JSON schema
+4. tools/call                 -> call a tool
+   (repeat 3/4 as needed)
 ```
 
 ### 7.1 `initialize`
@@ -323,7 +322,7 @@ Request:
 }
 ```
 
-Response (representatif; field `capabilities` mengikuti versi protokol/library):
+Response (representative; the `capabilities` field follows the protocol/library version):
 
 ```json
 {
@@ -345,7 +344,7 @@ Response (representatif; field `capabilities` mengikuti versi protokol/library):
 { "jsonrpc": "2.0", "method": "notifications/initialized" }
 ```
 
-Notifikasi — tidak ada response.
+Notification — there is no response.
 
 ### 7.3 `tools/list`
 
@@ -355,7 +354,7 @@ Request:
 { "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }
 ```
 
-Response (disederhanakan; lihat [bagian 8](#8-referensi-tool-schema--output) untuk schema tiap tool):
+Response (simplified; see [section 8](#8-tool-reference-schema--output) for each tool's schema):
 
 ```json
 {
@@ -380,7 +379,7 @@ Response (disederhanakan; lihat [bagian 8](#8-referensi-tool-schema--output) unt
 
 ### 7.4 `tools/call`
 
-Bentuk umum:
+General shape:
 
 ```json
 {
@@ -391,7 +390,7 @@ Bentuk umum:
 }
 ```
 
-Response sukses memuat `content` (teks JSON cadangan) **dan** `structuredContent` (data terstruktur — yang sebaiknya dibaca client):
+A successful response contains `content` (fallback JSON text) **and** `structuredContent` (structured data — which the client should read):
 
 ```json
 {
@@ -404,7 +403,7 @@ Response sukses memuat `content` (teks JSON cadangan) **dan** `structuredContent
 }
 ```
 
-### 7.5 Contoh tiap tool
+### 7.5 Example for each tool
 
 **`list_accounts`** — arguments `{}`.
 
@@ -453,75 +452,75 @@ Response sukses memuat `content` (teks JSON cadangan) **dan** `structuredContent
   "params": { "name":"list_folders","arguments":{ "account_id":"3f2b..." } } }
 ```
 
-`structuredContent`: array `Folder` (`{name, delimiter?, attributes?}`), diurutkan berdasarkan nama.
+`structuredContent`: array `Folder` (`{name, delimiter?, attributes?}`), sorted by name.
 
-## 8. Referensi tool (schema + output)
+## 8. Tool reference (schema + output)
 
-Semua tool memakai `inputSchema` bertipe object. Field tanpa `"required"` bersifat opsional.
+All tools use an `inputSchema` of type object. Fields without `"required"` are optional.
 
 ### 8.1 `list_accounts`
 
-- **Deskripsi:** List configured email accounts (id, name, email only — never credentials).
-- **Input:** `{}` (tanpa argumen).
+- **Description:** List configured email accounts (id, name, email only — never credentials).
+- **Input:** `{}` (no arguments).
 - **Output (`structuredContent`):** array `{ id, name, email }`.
-- **Catatan:** tidak pernah mengembalikan connection config maupun credential.
+- **Notes:** never returns the connection config or credentials.
 
 ### 8.2 `send_email`
 
 Input schema:
 
-| Field | Tipe | Wajib | Deskripsi |
+| Field | Type | Required | Description |
 |---|---|:---:|---|
-| `account_id` | string | ya | ID akun pengirim (dari `list_accounts`) |
-| `to` | string[] | ya | alamat penerima |
-| `cc` | string[] | tidak | CC |
-| `bcc` | string[] | tidak | BCC |
-| `subject` | string | ya | subjek |
-| `body_text` | string | tidak | body plain-text |
-| `body_html` | string | tidak | body HTML (alternatif `body_text`) |
-| `headers` | object (`map[string]string`) | tidak | custom header, mis. `{"X-Priority":"1"}` |
+| `account_id` | string | yes | Sender account ID (from `list_accounts`) |
+| `to` | string[] | yes | recipient address |
+| `cc` | string[] | no | CC |
+| `bcc` | string[] | no | BCC |
+| `subject` | string | yes | subject |
+| `body_text` | string | no | plain-text body |
+| `body_html` | string | no | HTML body (alternative to `body_text`) |
+| `headers` | object (`map[string]string`) | no | custom headers, e.g. `{"X-Priority":"1"}` |
 
 - **Output:** `{ "status": "sent" }`.
-- **Catatan:** attachment **tidak** didukung di MCP (base64 binary di argumen tool call dianggap buruk) — kirim attachment lewat REST `POST /accounts/{id}/send`.
+- **Notes:** attachments are **not** supported over MCP (base64 binary in tool-call arguments is considered bad) — send attachments via the REST `POST /accounts/{id}/send`.
 
 ### 8.3 `fetch_emails`
 
-| Field | Tipe | Wajib | Default | Deskripsi |
+| Field | Type | Required | Default | Description |
 |---|---|:---:|---|---|
-| `account_id` | string | ya | | ID akun |
-| `protocol` | string | tidak | `imap` | `"imap"` atau `"pop3"` |
-| `folder` | string | tidak | `INBOX` | folder (IMAP saja) |
-| `limit` | number | tidak | `20` | jumlah maks pesan |
-| `refresh` | boolean | tidak | `false` | `true` = paksa live-fetch |
+| `account_id` | string | yes | | Account ID |
+| `protocol` | string | no | `imap` | `"imap"` or `"pop3"` |
+| `folder` | string | no | `INBOX` | folder (IMAP only) |
+| `limit` | number | no | `20` | max number of messages |
+| `refresh` | boolean | no | `false` | `true` = force a live fetch |
 
-- **Output:** array `Message` (sama dengan REST).
-- **Catatan:** **tanpa** parameter `offset` (REST punya). Cache-first seperti REST.
+- **Output:** array `Message` (same as REST).
+- **Notes:** **no** `offset` parameter (REST has one). Cache-first like REST.
 
 ### 8.4 `check_new_emails`
 
-| Field | Tipe | Wajib | Default |
+| Field | Type | Required | Default |
 |---|---|:---:|---|
-| `account_id` | string | ya | |
-| `protocol` | string | tidak | `imap` |
-| `folder` | string | tidak | `INBOX` |
+| `account_id` | string | yes | |
+| `protocol` | string | no | `imap` |
+| `folder` | string | no | `INBOX` |
 
-- **Output:** `{ unread_count, new_count }` (sama dengan REST `POST /accounts/{id}/check`).
+- **Output:** `{ unread_count, new_count }` (same as REST `POST /accounts/{id}/check`).
 
 ### 8.5 `list_folders`
 
-| Field | Tipe | Wajib | Default | Deskripsi |
+| Field | Type | Required | Default | Description |
 |---|---|---|---|:---:|
-| `account_id` | string | ya | | ID akun |
-| `protocol` | string | tidak | `imap` | hanya `"imap"` yang mendukung folder |
+| `account_id` | string | yes | | Account ID |
+| `protocol` | string | no | `imap` | only `"imap"` supports folders |
 
-- **Output:** array `Folder` (`{name, delimiter?, attributes?}`), diurutkan berdasarkan nama.
-- **Catatan:** selalu live ke server (tidak di-cache). `attributes` memuat peran folder (mis. `\Sent`, `\Drafts`) sehingga agent bisa memetakan folder penting sendiri tanpa menebak nama. POP3/SMTP → `isError: true` ("protocol ... has no folders"). Sama dengan REST `GET /accounts/{id}/folders`.
+- **Output:** array `Folder` (`{name, delimiter?, attributes?}`), sorted by name.
+- **Notes:** always live against the server (not cached). `attributes` contains the folder roles (e.g. `\Sent`, `\Drafts`) so the agent can map important folders itself without guessing names. POP3/SMTP → `isError: true` ("protocol ... has no folders"). Same as REST `GET /accounts/{id}/folders`.
 
 ## 9. Error handling
 
-Dua kelas kegagalan dibedakan:
+Two classes of failure are distinguished:
 
-1. **Validasi/domain** (mis. `account_id`/`to` kosong, akun tak ada, gagal dial server mail) → dikembalikan sebagai **tool result** dengan `isError: true`, bukan JSON-RPC error:
+1. **Validation/domain** (e.g. empty `account_id`/`to`, account not found, failed to dial the mail server) → returned as a **tool result** with `isError: true`, not a JSON-RPC error:
 
    ```json
    {
@@ -534,68 +533,68 @@ Dua kelas kegagalan dibedakan:
    }
    ```
 
-2. **Protokol/transport** (request malformed, method tak dikenal) → **JSON-RPC error**, mis.:
+2. **Protocol/transport** (malformed request, unknown method) → **JSON-RPC error**, e.g.:
 
    ```json
    { "jsonrpc": "2.0", "id": 8, "error": { "code": -32601, "message": "Method not found" } }
    ```
 
-Client yang baik harus memeriksa `result.isError` sebelum memakai `structuredContent`.
+A well-behaved client must check `result.isError` before using `structuredContent`.
 
-## 10. Keamanan
+## 10. Security
 
-- **Streamable HTTP wajib auth:** `/mcp` tidak mengecualikan diri dari middleware API-key. Tanpa `X-API-Key` valid → `401`.
-- **stdio in-process:** tidak ada hop HTTP, tapi proses xmail tetap butuh `XMAIL_API_KEY`/`XMAIL_ENCRYPTION_KEY` untuk start; kredensial email tetap dienkripsi di SQLite (AES-256-GCM).
-- **Kredensial tidak pernah bocor:** `list_accounts` hanya mengembalikan `id/name/email`; `send_email`/`fetch_emails`/`check_new_emails` tidak mengembalikan kredensial.
-- **Log:** xmail tidak mencatat isi email/kredensial. Untuk stdio, log ditulis ke stderr (aman untuk stream MCP).
-- **Jangan** menaruh `X-API-Key` di tempat publik/URL query — kirim sebagai header. Untuk stdio, simpan di `env` client config, bukan argumen command line yang bisa terlihat di process list.
+- **Streamable HTTP requires auth:** `/mcp` does not exempt itself from the API-key middleware. Without a valid `X-API-Key` → `401`.
+- **stdio in-process:** there is no HTTP hop, but the xmail process still needs `XMAIL_API_KEY`/`XMAIL_ENCRYPTION_KEY` to start; email credentials are still encrypted in SQLite (AES-256-GCM).
+- **Credentials never leak:** `list_accounts` only returns `id/name/email`; `send_email`/`fetch_emails`/`check_new_emails` do not return credentials.
+- **Logs:** xmail does not log email contents/credentials. For stdio, logs are written to stderr (safe for the MCP stream).
+- **Do not** put `X-API-Key` in a public place/URL query — send it as a header. For stdio, store it in the client config's `env`, not in command-line arguments that can be seen in the process list.
 
-## 11. Uji dengan MCP Inspector
+## 11. Testing with MCP Inspector
 
-MCP Inspector (GUI/CLI dari MCP) bisa dipakai untuk memeriksa tool tanpa client penuh:
+MCP Inspector (a GUI/CLI from MCP) can be used to inspect the tools without a full client:
 
 ```bash
 npx @modelcontextprotocol/inspector
 ```
 
-Di Inspector: pilih transport **Streamable HTTP**, URL `http://localhost:5569/mcp`, tambahkan header `X-API-Key: <key>`, lalu **Connect** → tab **Tools** untuk `tools/list`, dan panggil tool dengan arguments JSON.
+In the Inspector: choose the **Streamable HTTP** transport, URL `http://localhost:5569/mcp`, add the `X-API-Key: <key>` header, then **Connect** → the **Tools** tab for `tools/list`, and call a tool with JSON arguments.
 
-Alternatif tanpa Inspector: gunakan `curl` (bagian 4.4 / 7) atau contoh Go (bagian 6).
+Alternative without the Inspector: use `curl` (section 4.4 / 7) or the Go example (section 6).
 
-## 12. Pemetaan MCP ↔ REST
+## 12. MCP ↔ REST mapping
 
-| MCP tool | REST padanan |
+| MCP tool | REST equivalent |
 |---|---|
-| `list_accounts` | `GET /accounts` (hanya `id/name/email`) |
-| `send_email` | `POST /accounts/{id}/send` (tanpa attachment) |
-| `fetch_emails` | `GET /accounts/{id}/messages` (tanpa `offset`, tanpa `folder` pada POP3) |
+| `list_accounts` | `GET /accounts` (only `id/name/email`) |
+| `send_email` | `POST /accounts/{id}/send` (no attachments) |
+| `fetch_emails` | `GET /accounts/{id}/messages` (no `offset`, no `folder` on POP3) |
 | `check_new_emails` | `POST /accounts/{id}/check` |
 | `list_folders` | `GET /accounts/{id}/folders` |
 
-Karena keduanya memanggil `account.Service` yang sama, perbedaan hanya pada bentuk input/output dan fitur yang sengaja tidak diekspos (attachment & offset di MCP).
+Because both call the same `account.Service`, the only differences are the input/output shape and the features deliberately not exposed (attachments & offset in MCP).
 
-## 13. Batasan & catatan
+## 13. Limitations & notes
 
-- `fetch_emails` tidak punya `offset` (paginasi hanya `limit` + `refresh`).
-- `send_email` tidak mendukung attachment.
-- `check_new_emails` menghitung `new_count` dari 50 pesan terbaru vs cache — bukan total mailbox.
-- `fetch_emails` cache-first; pakai `refresh=true` untuk menjamin data live.
-- POP3: folder selalu `INBOX`, `is_read` selalu `true`, `attachments` kosong, `unread_count` = 0.
-- Mark-as-read tidak diekspos sebagai tool MCP (hanya REST `POST /accounts/{id}/messages/read`).
-- `list_folders` hanya untuk IMAP; POP3/SMTP membalas `isError: true` ("protocol ... has no folders"). Folder selalu live, tidak di-cache.
-- Produsen versi: `serverInfo.version` mengikuti versi build xmail.
-- "xmail sebagai MCP **client**" (xmail memanggil MCP server lain) **belum ada** — masih backlog (PLAN.md Fase 9). Yang ada saat ini adalah xmail sebagai MCP **server**.
+- `fetch_emails` has no `offset` (pagination is only `limit` + `refresh`).
+- `send_email` does not support attachments.
+- `check_new_emails` computes `new_count` from the 50 most recent messages vs the cache — not the total mailbox.
+- `fetch_emails` is cache-first; use `refresh=true` to guarantee live data.
+- POP3: the folder is always `INBOX`, `is_read` is always `true`, `attachments` is empty, `unread_count` = 0.
+- Mark-as-read is not exposed as an MCP tool (only REST `POST /accounts/{id}/messages/read`).
+- `list_folders` is IMAP-only; POP3/SMTP replies `isError: true` ("protocol ... has no folders"). Folders are always live, not cached.
+- Version producer: `serverInfo.version` follows the xmail build version.
+- "xmail as an MCP **client**" (xmail calling another MCP server) **does not exist yet** — still backlogged. What exists today is xmail as an MCP **server**.
 
 ## 14. Troubleshooting
 
-| Gejala / pesan | Penyebab & solusi |
+| Symptom / message | Cause & solution |
 |---|---|
-| `401 missing or invalid X-API-Key header` | Header `X-API-Key` tidak dikirim/salah. Untuk HTTP pastikan header diteruskan client (bagian 4). |
-| `unexpected content type` / koneksi ditolak | Header `Accept` tidak memuat `text/event-stream`. Set `Accept: application/json, text/event-stream`. |
-| `tools/list` kosong / handshake gagal | Belum `initialize`, atau URL/transport salah. Pastikan path `/mcp` dan server hidup (`/healthz`). |
-| Tool balas `isError: true` | Argumen wajib kurang (`account_id`, `to`, `subject`, `uid`) atau operasi gagal (akun tak ada, gagal dial). Cek teks di `content[].text`. |
-| stdio: client menunggu tanpa balasan | `XMAIL_MCP_STDIO=true` belum di-set, atau binary bukan xmail. Pastikan env terisi. |
-| Proses xmail langsung mati saat stdio | `XMAIL_API_KEY` dan/atau `XMAIL_ENCRYPTION_KEY` kosong — server menolak start. Isi di blok `env`. |
-| Port bentrok saat stdio | Set `XMAIL_LISTEN_ADDR` ke port lain (mis. `:5570`) agar HTTP server internal tidak bentrok. |
-| Data MCP beda dengan REST | Seharusnya tidak bisa (logika sama). Cek `account_id`, `protocol`/`folder`, dan apakah salah satu memakai `refresh`/cache yang berbeda. |
-| Ingin melihat log | Log xmail ke **stderr**. HTTP: baris `METHOD /path status durasi`. |
+| `401 missing or invalid X-API-Key header` | The `X-API-Key` header is missing/wrong. For HTTP, make sure the client forwards the header (section 4). |
+| `unexpected content type` / connection refused | The `Accept` header does not include `text/event-stream`. Set `Accept: application/json, text/event-stream`. |
+| `tools/list` empty / handshake fails | `initialize` hasn't happened, or the URL/transport is wrong. Make sure the path is `/mcp` and the server is up (`/healthz`). |
+| Tool replies `isError: true` | A required argument is missing (`account_id`, `to`, `subject`, `uid`) or the operation failed (account not found, dial failed). Check the text in `content[].text`. |
+| stdio: client waits with no reply | `XMAIL_MCP_STDIO=true` is not set, or the binary is not xmail. Make sure the env is set. |
+| xmail process dies immediately on stdio | `XMAIL_API_KEY` and/or `XMAIL_ENCRYPTION_KEY` are empty — the server refuses to start. Fill them in the `env` block. |
+| Port clash on stdio | Set `XMAIL_LISTEN_ADDR` to another port (e.g. `:5570`) so the internal HTTP server doesn't clash. |
+| MCP data differs from REST | It shouldn't (same logic). Check `account_id`, `protocol`/`folder`, and whether one of them uses a different `refresh`/cache. |
+| Want to see logs | xmail logs go to **stderr**. HTTP: a `METHOD /path status duration` line. |

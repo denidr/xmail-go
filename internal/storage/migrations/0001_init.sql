@@ -1,4 +1,4 @@
--- Initial schema for xmail. See PLAN.md §2 for full rationale.
+-- Initial schema for xmail.
 
 CREATE TABLE IF NOT EXISTS accounts (
     id              TEXT PRIMARY KEY,

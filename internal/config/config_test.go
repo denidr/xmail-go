@@ -95,8 +95,8 @@ func TestLoad_InvalidEncryptionKeyBase64(t *testing.T) {
 	}
 }
 
-// TestLoad_ReadsDotEnv is the regression test for PLAN.md §0's promise
-// that ".env opsional untuk dev via godotenv" actually does something —
+// TestLoad_ReadsDotEnv is the regression test for the promise
+// that ".env is optional for dev via godotenv" actually does something —
 // a prior version had no godotenv import at all, so README.MD's
 // documented "cp .env.example .env; make run" flow silently did
 // nothing (Load only ever read the real process environment). This
@@ -175,7 +175,7 @@ func TestLoad_RealEnvOverridesDotEnv(t *testing.T) {
 // back through Load reproduces the same Config. This is what lets
 // internal/winservice reconstruct a service process's environment from
 // a loaded Config instead of re-listing every XMAIL_* name itself (the
-// duplication that shipped two bugs — see PLAN.md §10.6/§10.7).
+// duplication that shipped two bugs).
 func TestEnviron_RoundTripsThroughLoad(t *testing.T) {
 	clearEnv(t)
 	t.Setenv(EnvAPIKey, "test-key")

@@ -1,12 +1,11 @@
 // Package dashboard serves xmail's web dashboard: a small set of
 // embedded static assets (HTML/CSS/JS) that drive account management
 // (CRUD + per-protocol connectivity checks) against the existing REST
-// API. See PRD.MD §6.7 and PLAN-DASHBOARD.md.
+// API.
 //
 // The assets are embedded into the binary with go:embed, so all three
 // release targets (Docker x64, Docker arm64, Windows tray) serve the
-// dashboard without a build step or a new dependency — see
-// PLAN-DASHBOARD.md §0.1.
+// dashboard without a build step or a new dependency.
 package dashboard
 
 import (
@@ -23,8 +22,7 @@ var embedded embed.FS
 // middleware: a browser cannot attach a header to the HTML/CSS/JS
 // requests it makes while loading a page, and the assets hold no
 // secrets. Every API call the dashboard then makes from JavaScript
-// still requires X-API-Key (see internal/api.Server.Handler and
-// PLAN-DASHBOARD.md §2.2).
+// still requires X-API-Key (see internal/api.Server.Handler).
 func Handler() http.Handler {
 	sub, err := fs.Sub(embedded, "assets")
 	if err != nil {

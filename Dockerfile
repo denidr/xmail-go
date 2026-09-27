@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/xmail ./cmd/xmail
 # nonroot user (uid/gid 65532) otherwise has no write access to a bare
 # VOLUME mountpoint, and storage.Open fails with "unable to open database
 # file (14)" (verified: this exact failure was caught by actually running
-# the built image, not just by building it — see PLAN.md Fase 8 notes).
+# the built image, not just by building it).
 RUN mkdir -p /out/data
 
 FROM gcr.io/distroless/static-debian12:nonroot

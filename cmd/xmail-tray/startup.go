@@ -27,8 +27,8 @@ import (
 // and a fatal startup error additionally raises a message box when there
 // is a user able to see it.
 //
-// See PLAN.md §10.10 (the bug) — verified by launching the release .exe
-// with no environment: previously silent exit 1, now a dialog plus a log.
+// Verified by launching the release .exe with no environment:
+// previously silent exit 1, now a dialog plus a log.
 
 const (
 	mbOK            = 0x00000000
@@ -119,12 +119,12 @@ func fatalStartup(logPath, title string, err error) {
 func startupErrorMessage(logPath string, err error) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%v\n\n", err)
-	b.WriteString("xmail membutuhkan XMAIL_API_KEY dan XMAIL_ENCRYPTION_KEY.\n\n")
-	b.WriteString("Cara termudah: buat file bernama .env di folder yang sama dengan xmail.exe, berisi:\n\n")
-	b.WriteString("  XMAIL_API_KEY=kunci-pilihanmu\n")
-	b.WriteString("  XMAIL_ENCRYPTION_KEY=<base64 dari 32 byte acak>\n\n")
-	b.WriteString("Buat nilai XMAIL_ENCRYPTION_KEY dengan:\n  openssl rand -base64 32\n")
-	b.WriteString("(lihat .env.example di repo untuk daftar lengkap)")
+	b.WriteString("xmail requires XMAIL_API_KEY and XMAIL_ENCRYPTION_KEY.\n\n")
+	b.WriteString("Easiest way: create a file named .env in the same folder as xmail.exe, containing:\n\n")
+	b.WriteString("  XMAIL_API_KEY=your-chosen-key\n")
+	b.WriteString("  XMAIL_ENCRYPTION_KEY=<base64 of 32 random bytes>\n\n")
+	b.WriteString("Generate the XMAIL_ENCRYPTION_KEY value with:\n  openssl rand -base64 32\n")
+	b.WriteString("(see .env.example in the repo for the full list)")
 	if logPath != "" {
 		fmt.Fprintf(&b, "\n\nLog: %s", logPath)
 	}

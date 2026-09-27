@@ -23,8 +23,8 @@
 #   10. go test -race -tags integration   only with --race (needs cgo/gcc)
 #   11. coverage report               only with --coverage
 #
-# See PLAN.md §6 for the testing strategy behind these commands, and
-# PLAN.md §6.4 for why -race is opt-in (no cgo/gcc on every dev machine).
+# See ARCHITECTURE.md §7 for the testing strategy behind these commands, and
+# why -race is opt-in (no cgo/gcc on every dev machine).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,7 +38,7 @@ usage() {
 	cat >&2 <<EOF
 Usage: $(basename "$0") [--race] [--no-js] [--coverage]
 
-  --race      also run the race detector (needs cgo/gcc; see PLAN.md §6.4)
+  --race      also run the race detector (needs cgo/gcc)
   --no-js     skip the dashboard app.js syntax check
   --coverage  also print a per-function coverage report
 
@@ -138,7 +138,7 @@ if [ "$RACE" -eq 1 ]; then
 	go test -race -tags integration ./...
 	ok
 else
-	skip "needs cgo/gcc — re-run with --race (PLAN.md §6.4)"
+	skip "needs cgo/gcc — re-run with --race"
 fi
 
 if [ "$COVERAGE" -eq 1 ]; then

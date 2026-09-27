@@ -39,9 +39,8 @@ type testBackend struct {
 	// authUser/authPass, if authUser is non-empty, require CRAM-MD5 auth
 	// with these credentials before Mail/Rcpt/Data are reachable — used
 	// by TestIntegration_Send_RequiresAuth to prove internal/mailer/smtp
-	// actually performs SMTP AUTH (see PLAN.md Fase 8 "crosscheck": a
-	// prior version silently never sent AUTH at all despite credentials
-	// being configured).
+	// actually performs SMTP AUTH (a prior version silently never sent
+	// AUTH at all despite credentials being configured).
 	authUser, authPass string
 }
 
@@ -127,9 +126,9 @@ func (s *testSession) Data(r io.Reader) error {
 	return nil
 }
 
-// startTestServer starts an in-process plaintext SMTP server (see
-// PLAN.md §6.2: SMTP integration test) and returns its address and a
-// shutdown func. AllowInsecureAuth is enabled since this is a local,
+// startTestServer starts an in-process plaintext SMTP server and
+// returns its address and a shutdown func. AllowInsecureAuth is
+// enabled since this is a local,
 // non-TLS test fixture only.
 func startTestServer(t *testing.T) (addr string, backend *testBackend) {
 	t.Helper()
@@ -210,9 +209,8 @@ func TestIntegration_SendEmail_Plaintext(t *testing.T) {
 	}
 }
 
-// TestIntegration_Send_CustomHeaders proves PRD.MD §6.2 "custom headers
-// dasar" actually reaches the wire, not just that OutgoingMessage.Headers
-// compiles.
+// TestIntegration_Send_CustomHeaders proves custom headers actually
+// reach the wire, not just that OutgoingMessage.Headers compiles.
 func TestIntegration_Send_CustomHeaders(t *testing.T) {
 	addr, backend := startTestServer(t)
 	host, port := splitHostPort(t, addr)
@@ -257,9 +255,9 @@ func TestIntegration_TestConnection_Plaintext(t *testing.T) {
 // earlier version of buildMailClient set WithUsername/WithPassword but
 // never WithSMTPAuth, so go-mail's default SMTPAuthNoAuth meant AUTH was
 // never sent at all — TestConnection/Send silently "succeeded" against
-// servers requiring auth, even with a wrong password (caught by manually
-// probing a real Gmail account during Fase 8 crosscheck; see PLAN.md).
-// This locks that fix in via CI-runnable in-process server, using
+// servers requiring auth, even with a wrong password (caught by
+// manually probing a real Gmail account). This locks that fix in via
+// CI-runnable in-process server, using
 // CRAM-MD5 since that's the only mechanism go-mail's AutoDiscover will
 // pick over a non-TLS connection (see internal/mailer/smtp/client.go).
 func TestIntegration_Send_ActuallyAuthenticates(t *testing.T) {

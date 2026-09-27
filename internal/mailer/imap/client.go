@@ -1,5 +1,5 @@
 // Package imap implements mailer.Fetcher and mailer.Checker using
-// github.com/emersion/go-imap/v2. See PLAN.md Fase 3.
+// github.com/emersion/go-imap/v2.
 package imap
 
 import (
@@ -41,7 +41,7 @@ var (
 // go-imap dial function:
 //   - TLSModeTLS      -> implicit TLS (IMAPS, e.g. port 993)
 //   - TLSModeStartTLS -> plaintext connect + mandatory STARTTLS
-//   - TLSModeNone     -> no TLS at all (must be explicitly configured, see PRD.MD §8)
+//   - TLSModeNone     -> no TLS at all (must be explicitly configured)
 func (c *Client) dial(ctx context.Context) (*imapclient.Client, error) {
 	addr := fmt.Sprintf("%s:%d", c.cfg.Host, c.cfg.Port)
 	options := &imapclient.Options{}
@@ -83,10 +83,10 @@ func (c *Client) TestConnection(ctx context.Context) error {
 }
 
 // ListFolders returns every mailbox on the server, via IMAP LIST "". It
-// is always live — one cheap command, and a cached list would go stale
-// (see PLAN-FOLDERS.md §2). Results are sorted by name so the REST and
-// MCP outputs are deterministic regardless of the server's response
-// order (same rationale as Fetch's sort by UID).
+// is always live — one cheap command, and a cached list would go stale.
+// Results are sorted by name so the REST and MCP outputs are
+// deterministic regardless of the server's response order (same
+// rationale as Fetch's sort by UID).
 func (c *Client) ListFolders(ctx context.Context) ([]mailer.Folder, error) {
 	cl, err := c.dial(ctx)
 	if err != nil {
@@ -122,7 +122,7 @@ func (c *Client) ListFolders(ctx context.Context) ([]mailer.Folder, error) {
 // into mailer.ErrFolderNotFound (wrapped, so the server text survives).
 // Anything else — dial failures, auth errors, timeouts, other IMAP
 // errors — is returned unchanged, so a real server problem is not
-// mistaken for a bad folder name (see PLAN-FOLDERS.md §3.8).
+// mistaken for a bad folder name.
 func classifyFolderErr(err error) error {
 	var ie *imapv2.Error
 	if errors.As(err, &ie) && (ie.Code == imapv2.ResponseCodeNonExistent || ie.Code == imapv2.ResponseCodeTryCreate) {
@@ -134,8 +134,8 @@ func classifyFolderErr(err error) error {
 // Fetch selects folder and returns up to limit messages (most recent
 // first), skipping offset. Uses the IMAP ENVELOPE + FLAGS + UID +
 // BODYSTRUCTURE fetch items — message bodies themselves are not
-// downloaded (metadata + attachment filenames only, matching PLAN.md
-// §2 messages_cache schema and PRD.MD §6.3).
+// downloaded (metadata + attachment filenames only, matching the
+// messages_cache schema).
 func (c *Client) Fetch(ctx context.Context, folder string, limit, offset int) ([]mailer.Message, error) {
 	folder = mailer.DefaultFolder(folder)
 	cl, err := c.dial(ctx)
@@ -216,8 +216,8 @@ func (c *Client) Check(ctx context.Context, folder string) (unread int, err erro
 }
 
 // MarkRead sets the \Seen flag on the message identified by uid in
-// folder (see PRD.MD §6.3 "mark as read"). POP3 has no equivalent —
-// mailer/pop3.Client intentionally does not implement mailer.Marker.
+// folder. POP3 has no equivalent — mailer/pop3.Client intentionally
+// does not implement mailer.Marker.
 func (c *Client) MarkRead(ctx context.Context, folder, uid string) error {
 	folder = mailer.DefaultFolder(folder)
 	n, err := strconv.ParseUint(uid, 10, 32)

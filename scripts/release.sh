@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # xmail release build script — builds distributable artifacts for the
-# 3 release targets defined in PLAN.md §0.1:
+# 3 release targets:
 #   docker-amd64   linux/amd64 Docker image  (tar.gz, docker load-able)
 #   docker-arm64   linux/arm64 Docker image  (Armbian SBCs; tar.gz)
 #   windows-amd64  Windows x64 tray+service .exe

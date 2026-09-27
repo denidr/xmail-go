@@ -1,5 +1,5 @@
 // Package config loads xmail runtime configuration from environment
-// variables (12-factor style). See PLAN.md Fase 1.
+// variables (12-factor style).
 package config
 
 import (
@@ -44,8 +44,8 @@ const (
 // missing/invalid for required ones.
 //
 // Before reading os.Getenv, it best-effort loads a .env file from the
-// working directory via godotenv — dev convenience only (see
-// PLAN.md §0). godotenv.Load never overwrites a variable that's
+// working directory via godotenv — dev convenience only.
+// godotenv.Load never overwrites a variable that's
 // already set in the real environment, so this has zero effect in
 // Docker/production where .env is never present (excluded via
 // .dockerignore) and/or real env vars are already set; a missing .env
@@ -87,7 +87,7 @@ func Load() (Config, error) {
 // inverse of Load, so the set of XMAIL_* names and their encoding live
 // only in this package (internal/winservice used to re-list them all as
 // literals and re-encode EncryptionKey itself; that coupling shipped
-// two bugs — see PLAN.md §10.6 #19 and §10.7 #A).
+// two bugs).
 func (c Config) Environ() map[string]string {
 	return map[string]string{
 		EnvAPIKey:        c.APIKey,

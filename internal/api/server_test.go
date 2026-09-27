@@ -59,8 +59,7 @@ func TestHealthz_NoAuthRequired(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	// Regression (CODE_REVIEW.md round 5): /healthz used to write a bare
-	// "ok", breaking the {data,error} envelope every other route uses
-	// (PRD.MD §7).
+	// "ok", breaking the {data,error} envelope every other route uses.
 	var env struct {
 		Data  map[string]string `json:"data"`
 		Error any               `json:"error"`
@@ -161,8 +160,7 @@ func TestAccountsCRUD_EndToEnd(t *testing.T) {
 		t.Fatalf("update: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	// Delete — 200 with the standard {data,error} envelope, not a bare 204
-	// (see PLAN.md §3 "Semua response: {data, error}").
+	// Delete — 200 with the standard {data,error} envelope, not a bare 204.
 	rec = doRequest(t, h, http.MethodDelete, "/accounts/"+id, testAPIKey, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete: status = %d, body = %s", rec.Code, rec.Body.String())
@@ -223,10 +221,9 @@ func TestMessagesAndCheck_NotWiredYetReturnsError(t *testing.T) {
 }
 
 // TestCheck_ResponseShape locks the REST /check success body to the
-// shared account.CheckResult shape MCP's check_new_emails serializes
-// (PRD.MD §6.4; PLAN.md §10.9 candidate D) — both the decoded fields and
-// the raw JSON keys must stay unread_count/new_count, so the two skins
-// can't drift.
+// shared account.CheckResult shape MCP's check_new_emails serializes —
+// both the decoded fields and the raw JSON keys must stay
+// unread_count/new_count, so the two skins can't drift.
 func TestCheck_ResponseShape(t *testing.T) {
 	s := newTestServer(t)
 	h := s.Handler()
@@ -403,8 +400,7 @@ func TestMessagesList_Refresh(t *testing.T) {
 
 // TestMarkRead_Success proves POST /accounts/{id}/messages/read
 // reaches the wired mailer.Marker implementation with the right
-// folder/uid (PRD.MD §6.3 "mark as read", previously entirely absent
-// — see CODE_REVIEW.md).
+// folder/uid — previously entirely absent (see CODE_REVIEW.md).
 func TestMarkRead_Success(t *testing.T) {
 	s := newTestServer(t)
 	h := s.Handler()
@@ -436,7 +432,7 @@ func TestMarkRead_MissingUID(t *testing.T) {
 }
 
 // TestSend_CustomHeaders proves the "headers" request field reaches
-// mailer.OutgoingMessage.Headers (PRD.MD §6.2 "custom headers dasar").
+// mailer.OutgoingMessage.Headers.
 func TestSend_CustomHeaders(t *testing.T) {
 	s := newTestServer(t)
 	h := s.Handler()
@@ -477,6 +473,6 @@ func TestTestConnection_NotWiredYetReturnsError(t *testing.T) {
 
 	rec = doRequest(t, h, http.MethodPost, "/accounts/"+createEnv.Data.ID+"/test-connection", testAPIKey, testConnectionRequest{Protocol: "smtp"})
 	if rec.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500 (SMTP tester not wired until Fase 2), body = %s", rec.Code, rec.Body.String())
+		t.Errorf("status = %d, want 500 (SMTP tester not wired in this test server), body = %s", rec.Code, rec.Body.String())
 	}
 }

@@ -1,11 +1,11 @@
-// xmail dashboard — account management UI (PRD.MD §6.7, PLAN-DASHBOARD.md).
+// xmail dashboard — account management UI.
 //
 // Talks only to the REST API in internal/api (docs/API.md): no business
 // logic lives here, every action is an existing endpoint call.
 //
 // Served with CSP `default-src 'self'`, so no inline handlers, no
 // inline styles, no CDN. Server/user data is never written with
-// innerHTML — only textContent and DOM nodes (PLAN-DASHBOARD.md §4.4).
+// innerHTML — only textContent and DOM nodes.
 
 const KEY_STORAGE = 'xmail_api_key';
 const PROTOCOLS = ['smtp', 'imap', 'pop3'];
@@ -66,7 +66,7 @@ async function api(method, path, body) {
   try {
     res = await fetch(path, init);
   } catch (err) {
-    throw new ApiError('network_error', `Tidak bisa menghubungi server: ${fmtError(err)}`, 0);
+    throw new ApiError('network_error', `Cannot reach server: ${fmtError(err)}`, 0);
   }
 
   let payload = null;
@@ -78,7 +78,7 @@ async function api(method, path, body) {
 
   if (!res.ok || (payload && payload.error)) {
     const code = (payload && payload.error && payload.error.code) || String(res.status);
-    const message = (payload && payload.error && payload.error.message) || res.statusText || 'Permintaan gagal';
+    const message = (payload && payload.error && payload.error.message) || res.statusText || 'Request failed';
     throw new ApiError(code, message, res.status);
   }
   return payload ? payload.data : null;
@@ -102,13 +102,13 @@ function takeFlash() {
 }
 
 function updateSessionIndicator() {
-  sessionEl.textContent = apiKey ? 'sesi aktif' : '';
+  sessionEl.textContent = apiKey ? 'session active' : '';
 }
 
 function renderFatal(title, message) {
   const card = el('div', { class: 'card stack' });
   card.append(el('h1', {}, [title]), el('p', { class: 'error' }, [message]));
-  const back = el('button', { type: 'button', class: 'btn' }, ['Kembali ke daftar']);
+  const back = el('button', { type: 'button', class: 'btn' }, ['Back to list']);
   back.addEventListener('click', () => navigate('#/accounts'));
   card.append(el('div', { class: 'form-actions' }, [back]));
   appEl.append(card);
@@ -121,14 +121,14 @@ function renderLogin(message) {
   clear(appEl);
 
   const form = el('form', { class: 'card stack' });
-  form.append(el('h1', {}, ['Masuk']));
-  form.append(el('p', { class: 'muted' }, ['Masukkan API key xmail (nilai XMAIL_API_KEY di server).']));
+  form.append(el('h1', {}, ['Sign in']));
+  form.append(el('p', { class: 'muted' }, ['Enter the xmail API key (the XMAIL_API_KEY value on the server).']));
 
   const errorEl = el('p', { class: 'error', hidden: !message });
   if (message) errorEl.textContent = message;
 
   const input = el('input', { type: 'password', id: 'api-key', autocomplete: 'current-password', placeholder: 'X-API-Key' });
-  const submit = el('button', { type: 'submit', class: 'btn btn-primary' }, ['Masuk']);
+  const submit = el('button', { type: 'submit', class: 'btn btn-primary' }, ['Sign in']);
 
   form.append(errorEl, field('API key', input), el('div', { class: 'form-actions' }, [submit]));
 
@@ -147,8 +147,8 @@ function renderLogin(message) {
     } catch (err) {
       apiKey = previous;
       errorEl.textContent = err.code === 'unauthorized'
-        ? 'API key ditolak (401).'
-        : `Gagal memverifikasi API key: ${fmtError(err)}`;
+        ? 'API key rejected (401).'
+        : `Failed to verify API key: ${fmtError(err)}`;
       errorEl.hidden = false;
       submit.disabled = false;
     }
@@ -162,17 +162,17 @@ async function renderList() {
   topbarEl.hidden = false;
   updateSessionIndicator();
   clear(appEl);
-  appEl.append(el('p', { class: 'muted' }, ['Memuat akun…']));
+  appEl.append(el('p', { class: 'muted' }, ['Loading accounts…']));
 
   let accounts;
   try {
     accounts = await api('GET', '/accounts');
   } catch (err) {
-    if (err.code === 'unauthorized') return forceLogout('API key ditolak — silakan masuk lagi.');
+    if (err.code === 'unauthorized') return forceLogout('API key rejected — please sign in again.');
     clear(appEl);
     const banner = takeFlash();
     if (banner) appEl.append(banner);
-    renderFatal('Gagal memuat akun', fmtError(err));
+    renderFatal('Failed to load accounts', fmtError(err));
     return;
   }
 
@@ -181,19 +181,19 @@ async function renderList() {
   if (banner) appEl.append(banner);
 
   const header = el('div', { class: 'row row-between' });
-  header.append(el('h1', {}, [`Akun (${accounts.length})`]));
-  const addBtn = el('button', { type: 'button', class: 'btn btn-primary' }, ['+ Tambah akun']);
+  header.append(el('h1', {}, [`Accounts (${accounts.length})`]));
+  const addBtn = el('button', { type: 'button', class: 'btn btn-primary' }, ['+ Add account']);
   addBtn.addEventListener('click', () => navigate('#/accounts/new'));
   header.append(addBtn);
   appEl.append(header);
 
   if (accounts.length === 0) {
-    appEl.append(el('p', { class: 'muted' }, ['Belum ada akun. Klik "Tambah akun" untuk mulai.']));
+    appEl.append(el('p', { class: 'muted' }, ['No accounts yet. Click "Add account" to get started.']));
     return;
   }
 
   const headRow = el('tr');
-  for (const label of ['Nama', 'Email', 'Username', 'Protokol', 'Aksi']) headRow.append(el('th', {}, [label]));
+  for (const label of ['Name', 'Email', 'Username', 'Protocol', 'Actions']) headRow.append(el('th', {}, [label]));
 
   const tbody = el('tbody');
   for (const account of accounts) tbody.append(accountRow(account));
@@ -205,18 +205,18 @@ async function renderForm(id) {
   topbarEl.hidden = false;
   updateSessionIndicator();
   clear(appEl);
-  appEl.append(el('p', { class: 'muted' }, ['Memuat…']));
+  appEl.append(el('p', { class: 'muted' }, ['Loading…']));
 
   let account = null;
   if (id) {
     try {
       account = await api('GET', `/accounts/${encodeURIComponent(id)}`);
     } catch (err) {
-      if (err.code === 'unauthorized') return forceLogout('API key ditolak — silakan masuk lagi.');
+      if (err.code === 'unauthorized') return forceLogout('API key rejected — please sign in again.');
       clear(appEl);
       const banner = takeFlash();
       if (banner) appEl.append(banner);
-      renderFatal('Gagal memuat akun', fmtError(err));
+      renderFatal('Failed to load accounts', fmtError(err));
       return;
     }
   }
@@ -232,17 +232,17 @@ async function renderForm(id) {
   const passwordInput = el('input', { type: 'password', id: 'password', autocomplete: 'new-password' });
 
   const form = el('form', { class: 'card stack' });
-  form.append(el('h1', {}, [isEdit ? 'Edit akun' : 'Tambah akun']));
+  form.append(el('h1', {}, [isEdit ? 'Edit account' : 'Add account']));
   form.append(
-    field('Nama', nameInput),
-    field('Email (jadi alamat From saat kirim)', emailInput),
+    field('Name', nameInput),
+    field('Email (becomes the From address when sending)', emailInput),
     field('Username', usernameInput),
     field(
       'Password',
       passwordInput,
       isEdit
-        ? 'Kosongkan untuk mempertahankan kredensial tersimpan. Password tidak pernah ditampilkan oleh API.'
-        : 'Wajib diisi saat membuat akun.',
+        ? 'Leave blank to keep the stored credential. The API never returns the password.'
+        : 'Required when creating an account.',
     ),
   );
 
@@ -260,8 +260,8 @@ async function renderForm(id) {
   // account from the DB), so this belongs only in edit mode.
   if (isEdit) form.append(testPanel(account));
 
-  const saveBtn = el('button', { type: 'submit', class: 'btn btn-primary' }, [isEdit ? 'Simpan perubahan' : 'Simpan akun']);
-  const cancelBtn = el('button', { type: 'button', class: 'btn' }, ['Batal']);
+  const saveBtn = el('button', { type: 'submit', class: 'btn btn-primary' }, [isEdit ? 'Save changes' : 'Save account']);
+  const cancelBtn = el('button', { type: 'button', class: 'btn' }, ['Cancel']);
   cancelBtn.addEventListener('click', () => navigate('#/accounts'));
   form.append(el('div', { class: 'form-actions' }, [saveBtn, cancelBtn]));
 
@@ -302,11 +302,11 @@ async function renderForm(id) {
         : await api('POST', '/accounts', payload);
       flash = {
         type: 'ok',
-        text: isEdit ? 'Perubahan disimpan.' : 'Akun dibuat. Uji konektivitasnya di panel bawah.',
+        text: isEdit ? 'Changes saved.' : 'Account created. Test its connectivity in the panel below.',
       };
       navigate(`#/accounts/${encodeURIComponent(saved.id)}`);
     } catch (err) {
-      if (err.code === 'unauthorized') return forceLogout('API key ditolak — silakan masuk lagi.');
+      if (err.code === 'unauthorized') return forceLogout('API key rejected — please sign in again.');
       showError(fmtError(err));
       saveBtn.disabled = false;
     }
@@ -333,7 +333,7 @@ function protocolBadges(account) {
 function accountRow(account) {
   const testBtn = el('button', { type: 'button', class: 'btn btn-sm' }, ['Test']);
   const editBtn = el('button', { type: 'button', class: 'btn btn-sm' }, ['Edit']);
-  const delBtn = el('button', { type: 'button', class: 'btn btn-sm btn-danger' }, ['Hapus']);
+  const delBtn = el('button', { type: 'button', class: 'btn btn-sm btn-danger' }, ['Delete']);
 
   const resultsRow = el('tr', { class: 'results', hidden: true });
   const resultsCell = el('td', { colspan: '5' });
@@ -367,11 +367,11 @@ async function runTests(account, resultsEl) {
   clear(resultsEl);
   const list = configuredProtocols(account);
   if (list.length === 0) {
-    resultsEl.append(el('span', { class: 'muted' }, ['Tidak ada protokol terkonfigurasi.']));
+    resultsEl.append(el('span', { class: 'muted' }, ['No protocols configured.']));
     return;
   }
   for (const proto of list) {
-    const badge = el('span', { class: 'badge badge-pending' }, [`${proto}: menguji…`]);
+    const badge = el('span', { class: 'badge badge-pending' }, [`${proto}: testing…`]);
     resultsEl.append(badge);
     await ping(account.id, proto, badge);
   }
@@ -384,18 +384,18 @@ async function ping(accountId, proto, badge) {
     badge.textContent = `${proto}: ok`;
   } catch (err) {
     badge.className = 'badge badge-err';
-    badge.textContent = `${proto}: gagal — ${fmtError(err)}`;
+    badge.textContent = `${proto}: failed — ${fmtError(err)}`;
   }
 }
 
 async function deleteAccount(account, button) {
-  if (!window.confirm(`Hapus akun "${account.name}"? Kredensial dan cache-nya ikut terhapus.`)) return;
+  if (!window.confirm(`Delete account "${account.name}"? Its credentials and cache will be deleted too.`)) return;
   button.disabled = true;
   try {
     await api('DELETE', `/accounts/${encodeURIComponent(account.id)}`);
-    flash = { type: 'ok', text: `Akun "${account.name}" dihapus.` };
+    flash = { type: 'ok', text: `Account "${account.name}" deleted.` };
   } catch (err) {
-    flash = { type: 'err', text: `Gagal menghapus akun "${account.name}": ${fmtError(err)}` };
+    flash = { type: 'err', text: `Failed to delete account "${account.name}": ${fmtError(err)}` };
   }
   route();
 }
@@ -449,12 +449,12 @@ function tlsModesFor(proto) {
 
 function testPanel(account) {
   const section = el('div', { class: 'protocol' });
-  section.append(el('h2', {}, ['Uji koneksi']));
-  section.append(el('p', { class: 'hint' }, ['Menguji konfigurasi yang tersimpan di server, bukan perubahan yang belum disimpan.']));
+  section.append(el('h2', {}, ['Test connection']));
+  section.append(el('p', { class: 'hint' }, ['Tests the configuration stored on the server, not unsaved changes.']));
 
   const list = configuredProtocols(account);
   if (list.length === 0) {
-    section.append(el('p', { class: 'muted' }, ['Akun ini belum punya protokol terkonfigurasi.']));
+    section.append(el('p', { class: 'muted' }, ['This account has no configured protocols yet.']));
     return section;
   }
 
@@ -464,7 +464,7 @@ function testPanel(account) {
     const btn = el('button', { type: 'button', class: 'btn btn-sm' }, [`Test ${proto}`]);
     btn.addEventListener('click', async () => {
       btn.disabled = true;
-      const badge = el('span', { class: 'badge badge-pending' }, [`${proto}: menguji…`]);
+      const badge = el('span', { class: 'badge badge-pending' }, [`${proto}: testing…`]);
       results.append(badge);
       await ping(account.id, proto, badge);
       btn.disabled = false;
@@ -476,19 +476,19 @@ function testPanel(account) {
 }
 
 function validate(payload, { isEdit, password }) {
-  if (!payload.name) return 'Nama wajib diisi.';
-  if (!payload.email) return 'Email wajib diisi.';
-  if (!payload.username) return 'Username wajib diisi.';
-  if (!isEdit && !password) return 'Password wajib diisi saat membuat akun.';
+  if (!payload.name) return 'Name is required.';
+  if (!payload.email) return 'Email is required.';
+  if (!payload.username) return 'Username is required.';
+  if (!isEdit && !password) return 'Password is required when creating an account.';
 
   const configured = PROTOCOLS.filter((proto) => payload[proto] != null);
-  if (configured.length === 0) return 'Aktifkan minimal satu protokol (SMTP/IMAP/POP3).';
+  if (configured.length === 0) return 'Enable at least one protocol (SMTP/IMAP/POP3).';
 
   for (const proto of configured) {
     const cfg = payload[proto];
-    if (!cfg.host) return `Host ${proto.toUpperCase()} wajib diisi.`;
+    if (!cfg.host) return `Host ${proto.toUpperCase()} is required.`;
     if (!Number.isInteger(cfg.port) || cfg.port < 1 || cfg.port > 65535) {
-      return `Port ${proto.toUpperCase()} harus bilangan bulat 1–65535.`;
+      return `Port ${proto.toUpperCase()} must be an integer from 1 to 65535.`;
     }
   }
   return null;

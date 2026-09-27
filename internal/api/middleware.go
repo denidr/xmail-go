@@ -39,8 +39,7 @@ func (r *statusRecorder) WriteHeader(status int) {
 }
 
 // requestLogger logs method/path/status/duration only — never request
-// or response bodies (which may contain credentials or email content),
-// per PRD.MD §8 security considerations.
+// or response bodies (which may contain credentials or email content).
 func requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()

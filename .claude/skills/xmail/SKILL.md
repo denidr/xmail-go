@@ -3,8 +3,8 @@ name: xmail
 description: >-
   Use when the user asks to send an email, check/fetch inbox messages, or manage
   email accounts through xmail (this project's own email service) — either as
-  plain instructions ("kirim email lewat xmail", "cek email masuk", "list akun
-  email", "tambah akun email baru") or when MCP tools named list_accounts,
+  plain instructions ("send an email via xmail", "check my inbox", "list email
+  accounts", "add a new email account") or when MCP tools named list_accounts,
   send_email, fetch_emails, check_new_emails, or list_folders are already
   available in your tool list and the task is email-related. Covers both of xmail's interfaces:
   its REST API (http://<host>:<port>, header X-API-Key) and its MCP server
@@ -15,7 +15,7 @@ description: >-
 
 # xmail — send/fetch/check email as an agent
 
-xmail is this repo's own email-as-a-service backend (see [PRD.MD](../../../PRD.MD), [ARCHITECTURE.md](../../../ARCHITECTURE.md)). It exposes the exact same operations two ways — a REST API and an MCP server — both backed by the identical business logic (`account.Service`), so results are equivalent either way. This skill tells you which to reach for and the exact shapes to send.
+xmail is this repo's own email-as-a-service backend (see [ARCHITECTURE.md](../../../ARCHITECTURE.md)). It exposes the exact same operations two ways — a REST API and an MCP server — both backed by the identical business logic (`account.Service`), so results are equivalent either way. This skill tells you which to reach for and the exact shapes to send.
 
 ## 1. Figure out how you're connected
 

@@ -25,9 +25,9 @@ func queryBool(r *http.Request, key string) bool {
 	return v == "1" || v == "true"
 }
 
-// handleFoldersList implements GET /accounts/{id}/folders?protocol=imap
-// (see PLAN-FOLDERS.md §3.5). No DTO: []mailer.Folder serializes
-// directly, and nil is normalized to [] like handleMessagesList.
+// handleFoldersList implements GET /accounts/{id}/folders?protocol=imap.
+// No DTO: []mailer.Folder serializes directly, and nil is normalized to
+// [] like handleMessagesList.
 func (s *Server) handleFoldersList(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	protocol := r.URL.Query().Get("protocol")
@@ -43,8 +43,8 @@ func (s *Server) handleFoldersList(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, folders)
 }
 
-// handleMessagesList implements GET /accounts/{id}/messages (see
-// PLAN.md §3): ?folder=INBOX&limit=20&offset=0&protocol=imap&refresh=true
+// handleMessagesList implements GET /accounts/{id}/messages:
+// ?folder=INBOX&limit=20&offset=0&protocol=imap&refresh=true
 //
 // folder/protocol/limit are all passed through as-is (including empty
 // string / 0) and defaulted once, centrally, in account.Service — see
@@ -78,7 +78,7 @@ type checkRequest struct {
 	Folder   string `json:"folder"`
 }
 
-// handleCheck implements POST /accounts/{id}/check (see PLAN.md §3).
+// handleCheck implements POST /accounts/{id}/check.
 func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	req, err := decodeJSON[checkRequest](r)
@@ -104,8 +104,7 @@ type markReadRequest struct {
 }
 
 // handleMarkRead implements POST /accounts/{id}/messages/read — marks
-// one message as read (IMAP only, see mailer.Marker / PRD.MD §6.3
-// "mark as read").
+// one message as read (IMAP only, see mailer.Marker).
 func (s *Server) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	req, err := decodeJSON[markReadRequest](r)

@@ -13,8 +13,7 @@ import (
 
 // TestClassifyFolderErr_NonExistent locks in that a "no such mailbox"
 // status response becomes mailer.ErrFolderNotFound (so account.Service
-// can answer 400 instead of 500), while keeping the server's own text —
-// see PLAN-FOLDERS.md §3.3/§3.8.
+// can answer 400 instead of 500), while keeping the server's own text.
 func TestClassifyFolderErr_NonExistent(t *testing.T) {
 	in := &imapv2.Error{
 		Code: imapv2.ResponseCodeNonExistent,

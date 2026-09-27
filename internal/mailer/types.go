@@ -1,7 +1,7 @@
 // Package mailer defines protocol-agnostic interfaces implemented by
 // internal/mailer/{smtp,imap,pop3}. api and mcpserver depend only on
 // these interfaces (via account.Service), never on a specific
-// protocol package. See PLAN.md §1.
+// protocol package.
 package mailer
 
 import (
@@ -28,8 +28,7 @@ type OutgoingMessage struct {
 	// Headers are additional custom header lines (e.g. "X-Priority",
 	// "Reply-To") applied on top of the standard ones. Standard headers
 	// (From/To/Cc/Bcc/Subject/Content-Type/etc.) are always managed by
-	// the Sender implementation and cannot be overridden here — see
-	// PRD.MD §6.2 "custom headers dasar".
+	// the Sender implementation and cannot be overridden here.
 	Headers map[string]string
 }
 
@@ -48,9 +47,9 @@ type Message struct {
 	Date    string `json:"date"`
 	IsRead  bool   `json:"is_read"`
 	// Attachments is the list of attachment filenames found in the
-	// message's MIME structure — names only (see PRD.MD §6.3), never
-	// downloaded/decoded. Empty/nil for POP3 (TOP doesn't expose body
-	// structure) and for IMAP messages with no attachment parts.
+	// message's MIME structure — names only, never downloaded/decoded.
+	// Empty/nil for POP3 (TOP doesn't expose body structure) and for
+	// IMAP messages with no attachment parts.
 	Attachments []string `json:"attachments,omitempty"`
 }
 
@@ -80,7 +79,8 @@ type Fetcher interface {
 // (implemented by mailer/imap; POP3 has no unseen-flag concept, see
 // mailer/pop3). "New since last check" is not a protocol-level
 // concept — account.Service.CheckNew computes it by diffing a Fetch
-// against messages_cache (see PLAN.md §3 /accounts/{id}/check).
+// against messages_cache (see the /accounts/{id}/check endpoint in
+// docs/API.md).
 type Checker interface {
 	Check(ctx context.Context, folder string) (unread int, err error)
 }
@@ -143,8 +143,8 @@ func DefaultFolder(folder string) string {
 // of using start/end, since a naive start>end computation with a
 // non-positive limit can otherwise be mishandled by protocol-specific
 // range types (see the internal/mailer/imap zero-limit regression
-// test in PLAN.md Fase 3/8 notes). Shared by mailer/imap and
-// mailer/pop3 so the windowing logic is defined exactly once.
+// test). Shared by mailer/imap and mailer/pop3 so the windowing logic
+// is defined exactly once.
 func WindowRange(total, limit, offset int) (start, end int, ok bool) {
 	if offset < 0 {
 		// Not a position in a mailbox: refuse rather than compute a range

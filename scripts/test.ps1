@@ -18,12 +18,12 @@
     7.  go test -tags integration     in-process fake SMTP/IMAP/POP3
     8.  go test -tags xmailtray       tray + service tests (Windows host only)
     9.  node --check                  dashboard JS syntax (if node present)
-    10. go test -race (opt-in)        -Race, needs cgo/gcc (PLAN.md §6.4)
+    10. go test -race (opt-in)        -Race, needs cgo/gcc
     11. coverage report               -Coverage
 
 .PARAMETER Race
   Also run the race detector. Requires cgo/gcc — not available on every
-  dev machine (see PLAN.md §6.4); run it in CI before a release build.
+  dev machine; run it in CI before a release build.
 
 .PARAMETER NoJs
   Skip the dashboard app.js syntax check.
@@ -152,7 +152,7 @@ if ($Race) {
     if ($LASTEXITCODE -ne 0) { Fail "race detector run failed (exit $LASTEXITCODE)" }
     Ok
 } else {
-    Skip "needs cgo/gcc — re-run with -Race (PLAN.md §6.4)"
+    Skip "needs cgo/gcc — re-run with -Race"
 }
 
 if ($Coverage) {

@@ -29,7 +29,7 @@ func connConfigFromDomain(c *account.ConnectionConfig) *connConfigDTO {
 
 // accountRequest is the JSON body accepted by POST/PUT /accounts.
 // Password is required on create; on update, a nil/omitted Password
-// leaves the stored credential unchanged (see PLAN.md §3).
+// leaves the stored credential unchanged.
 type accountRequest struct {
 	Name     string         `json:"name"`
 	Email    string         `json:"email"`
@@ -53,8 +53,7 @@ func (r accountRequest) toDomain(id string) account.Account {
 }
 
 // accountResponse is the JSON shape returned for an account. It never
-// includes the credential (PRD.MD §8 security: never expose secrets
-// via API responses).
+// includes the credential (never expose secrets via API responses).
 type accountResponse struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`

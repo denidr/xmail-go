@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-// envelope is the standard {data,error} response shape (PLAN.md §3).
+// envelope is the standard {data,error} response shape.
 type envelope struct {
 	Data  any        `json:"data"`
 	Error *errorBody `json:"error"`

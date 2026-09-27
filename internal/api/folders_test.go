@@ -88,7 +88,7 @@ func TestFoldersList_EmptyIsArray(t *testing.T) {
 }
 
 // TestFoldersList_ProtocolWithoutFolders: POP3 is a caller error (400),
-// not a server error (PLAN-FOLDERS.md §2).
+// not a server error.
 func TestFoldersList_ProtocolWithoutFolders(t *testing.T) {
 	s := newTestServer(t)
 	h := s.Handler()
@@ -111,9 +111,9 @@ func TestFoldersList_UnknownAccountIs404(t *testing.T) {
 }
 
 // TestMessagesList_FolderNotFoundIs400 is the REST proof of the
-// deliberate behavior change (PLAN-FOLDERS.md §3.8): a caller-supplied
-// folder that does not exist now answers 400 validation_failed, where
-// it used to be 500 internal_error. It fails without account.domainError.
+// deliberate behavior change: a caller-supplied folder that does not
+// exist now answers 400 validation_failed, where it used to be 500
+// internal_error. It fails without account.domainError.
 func TestMessagesList_FolderNotFoundIs400(t *testing.T) {
 	s := newTestServer(t)
 	h := s.Handler()

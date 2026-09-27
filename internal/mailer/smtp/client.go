@@ -1,5 +1,4 @@
 // Package smtp implements mailer.Sender using github.com/wneessen/go-mail.
-// See PLAN.md Fase 2.
 package smtp
 
 import (
@@ -37,7 +36,7 @@ var _ mailer.Sender = (*Client)(nil)
 // buildMailClient maps account.TLSMode to the go-mail TLS options:
 //   - TLSModeTLS      -> implicit TLS (SMTPS, e.g. port 465)
 //   - TLSModeStartTLS -> mandatory STARTTLS (fails if server doesn't support it)
-//   - TLSModeNone     -> no TLS at all (must be explicitly configured, see PRD.MD §8)
+//   - TLSModeNone     -> no TLS at all (must be explicitly configured)
 func (c *Client) buildMailClient() (*gomail.Client, error) {
 	opts := []gomail.Option{
 		gomail.WithPort(c.cfg.Port),
@@ -120,9 +119,8 @@ func (c *Client) Send(ctx context.Context, msg mailer.OutgoingMessage) error {
 	for name, value := range msg.Headers {
 		// Preformatted: sent as-is under the given name, letting callers
 		// set arbitrary custom headers (e.g. "X-Priority", "Reply-To")
-		// per PRD.MD §6.2 "custom headers dasar" without go-mail
-		// re-validating/re-encoding the value as it would for its own
-		// predefined address/date/etc. headers.
+		// without go-mail re-validating/re-encoding the value as it
+		// would for its own predefined address/date/etc. headers.
 		m.SetGenHeaderPreformatted(gomail.Header(name), value)
 	}
 

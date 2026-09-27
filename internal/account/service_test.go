@@ -25,7 +25,7 @@ func newTestService(t *testing.T) *Service {
 
 // registerSMTP/registerIMAP wire test doubles as SMTP/IMAP protocol
 // implementations — the tests mock the registered Protocol, not a
-// concrete mailer package (see PLAN.md §6.1).
+// concrete mailer package.
 func registerSMTP(svc *Service, fn func(cfg ConnectionConfig, fromAddress, username, secret string) mailer.Sender) {
 	svc.RegisterProtocol(ProtocolSMTP, Protocol{Sender: fn})
 }
@@ -125,7 +125,7 @@ func TestService_Update_SecretOptional(t *testing.T) {
 
 // mockSender is a test double for mailer.Sender, standing in for a real
 // smtp.Client without any network I/O — Service tests mock the
-// registered Protocol's constructor entirely (see PLAN.md §6.1).
+// registered Protocol's constructor entirely.
 type mockSender struct {
 	err error
 }
@@ -209,7 +209,7 @@ func TestService_ListFolders(t *testing.T) {
 
 // TestService_ListFolders_ProtocolWithoutFolders: POP3 only has INBOX
 // and SMTP has no mailbox at all, so both are a caller error (400),
-// not a server error (PLAN-FOLDERS.md §2/§3.4).
+// not a server error.
 func TestService_ListFolders_ProtocolWithoutFolders(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t)
@@ -241,8 +241,8 @@ func TestService_ListFolders_UnknownAccount(t *testing.T) {
 }
 
 // TestService_FolderNotFoundIsValidation locks in the deliberate
-// behavior change (PLAN-FOLDERS.md §3.8): a mailbox that does not exist
-// is a caller error (ErrValidation -> HTTP 400), not a server error.
+// behavior change: a mailbox that does not exist is a caller error
+// (ErrValidation -> HTTP 400), not a server error.
 func TestService_FolderNotFoundIsValidation(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t)

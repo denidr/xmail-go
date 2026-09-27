@@ -1,77 +1,77 @@
 # xmail — REST API Reference
 
-Referensi lengkap REST API xmail: konsep dasar, autentikasi, envelope response, semantik paginasi/cache, konfigurasi TLS per provider, dan detail tiap endpoint (parameter, status code, contoh request/response).
+Complete reference for the xmail REST API: basic concepts, authentication, response envelope, pagination/cache semantics, per-provider TLS configuration, and details for each endpoint (parameters, status codes, request/response examples).
 
-- Kode handler: `internal/api/` (semua adapter tipis di atas `account.Service`).
-- Logika bisnis: `internal/account/service.go`.
-- Import Postman siap pakai: [`docs/postman/`](./postman/).
-- Panduan MCP client: [`docs/MCP_CLIENT_GUIDE.md`](./MCP_CLIENT_GUIDE.md).
-- Cara menambah endpoint baru: [`ARCHITECTURE.md §5.1`](../ARCHITECTURE.md).
+- Handler code: `internal/api/` (all thin adapters on top of `account.Service`).
+- Business logic: `internal/account/service.go`.
+- Ready-to-use Postman import: [`docs/postman/`](./postman/).
+- MCP client guide: [`docs/MCP_CLIENT_GUIDE.md`](./MCP_CLIENT_GUIDE.md).
+- How to add a new endpoint: [`ARCHITECTURE.md §5.1`](../ARCHITECTURE.md).
 
-**Daftar isi**
+**Table of contents**
 
-1. [Konsep dasar](#1-konsep-dasar)
+1. [Basic concepts](#1-basic-concepts)
 2. [Quickstart](#2-quickstart)
-3. [Autentikasi](#3-autentikasi)
-4. [Envelope response & kode error](#4-envelope-response--kode-error)
-5. [Paginasi & semantik cache](#5-paginasi--semantik-cache)
-6. [Mode TLS & contoh provider](#6-mode-tls--contoh-provider)
-7. [Referensi endpoint](#7-referensi-endpoint)
-8. [Referensi tipe data](#8-referensi-tipe-data)
-9. [Walkthrough end-to-end](#9-walkthrough-end-to-end)
+3. [Authentication](#3-authentication)
+4. [Response envelope & error codes](#4-response-envelope--error-codes)
+5. [Pagination & cache semantics](#5-pagination--cache-semantics)
+6. [TLS modes & provider examples](#6-tls-modes--provider-examples)
+7. [Endpoint reference](#7-endpoint-reference)
+8. [Data type reference](#8-data-type-reference)
+9. [End-to-end walkthrough](#9-end-to-end-walkthrough)
 10. [Troubleshooting / FAQ](#10-troubleshooting--faq)
-11. [Import ke Postman](#11-import-ke-postman)
-12. [Dashboard web](#12-dashboard-web)
+11. [Importing into Postman](#11-importing-into-postman)
+12. [Web dashboard](#12-web-dashboard)
 
 ---
 
-## 1. Konsep dasar
+## 1. Basic concepts
 
-xmail adalah backend "email-as-a-service": menyimpan beberapa **Account** (mailbox), mengirim email atas nama akun tersebut (SMTP), dan membaca mailbox-nya (IMAP/POP3). Operasi yang sama juga diekspos lewat MCP untuk AI agent — REST dan MCP memanggil `account.Service` yang sama, jadi datanya identik.
+xmail is an "email-as-a-service" backend: it stores multiple **Account**s (mailboxes), sends email on behalf of those accounts (SMTP), and reads their mailboxes (IMAP/POP3). The same operations are also exposed over MCP for AI agents — REST and MCP call the same `account.Service`, so the data is identical.
 
-Istilah inti (lihat [`CONTEXT.md`](../CONTEXT.md) untuk glosarium lengkap):
+Core terms (see [`CONTEXT.md`](../CONTEXT.md) for the full glossary):
 
-| Istilah | Arti |
+| Term | Meaning |
 |---|---|
-| **Account** | Satu mailbox terkonfigurasi (nama, email, username, koneksi per protokol). Tidak pernah membawa kredensial di response. |
-| **Mailer protocol** | `smtp` (kirim), `imap` (fetch/check/mark-read), `pop3` (fetch saja). Satu akun boleh mengonfigurasi sebagian saja. |
-| **Connection** | `{host, port, tls_mode}` untuk satu protokol pada satu akun. |
-| **Message** | Metadata satu email: UID, subject, from, to, date, is_read, nama-nama attachment. **Bukan** body. |
-| **Folder** | Mailbox bernama di server. IMAP bisa banyak; POP3 hanya punya `INBOX`. Nama folder IMAP bergantung server/bahasa akun — pakai `GET /accounts/{id}/folders` untuk mengetahuinya, jangan menebak. |
-| **Fetch window** | Sepotong mailbox, terbaru dulu: `limit` pesan terbaru, melewati `offset`. |
-| **Message cache** | Store lokal metadata Message, di-key `(account, protocol, folder)`. |
-| **Coverage / Exhausted** | Seberapa banyak pesan terbaru yang dijamin ada di cache / seluruh mailbox sudah tercache. |
-| **Check** | Poll mailbox: jumlah unread + berapa pesan terbaru yang belum ada di cache. |
+| **Account** | A single configured mailbox (name, email, username, per-protocol connection). It never carries credentials in a response. |
+| **Mailer protocol** | `smtp` (send), `imap` (fetch/check/mark-read), `pop3` (fetch only). An account may configure only some of them. |
+| **Connection** | `{host, port, tls_mode}` for one protocol on one account. |
+| **Message** | Metadata for one email: UID, subject, from, to, date, is_read, attachment filenames. **Not** the body. |
+| **Folder** | A named mailbox on the server. IMAP can have many; POP3 only has `INBOX`. IMAP folder names depend on the server/account language — use `GET /accounts/{id}/folders` to find them out, don't guess. |
+| **Fetch window** | A slice of the mailbox, newest first: the `limit` newest messages, skipping `offset`. |
+| **Message cache** | Local store of Message metadata, keyed by `(account, protocol, folder)`. |
+| **Coverage / Exhausted** | How many of the newest messages are guaranteed to be in the cache / the entire mailbox is cached. |
+| **Check** | Poll the mailbox: unread count + how many of the newest messages are not yet in the cache. |
 
-Kemampuan per protokol:
+Capabilities per protocol:
 
-| Protokol | Kirim | Fetch | Check (unread) | Mark read | Attachment (nama) | Folder |
+| Protocol | Send | Fetch | Check (unread) | Mark read | Attachment (name) | Folder |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
-| SMTP | ya | — | — | — | — | — |
-| IMAP | — | ya | ya | ya | ya | banyak |
-| POP3 | — | ya | tidak | tidak | tidak | `INBOX` saja |
+| SMTP | yes | — | — | — | — | — |
+| IMAP | — | yes | yes | yes | yes | many |
+| POP3 | — | yes | no | no | no | `INBOX` only |
 
-Catatan POP3: tidak punya konsep flag per-pesan, jadi `is_read` selalu `true`, `unread_count` selalu `0`, dan `POST /messages/read` mengembalikan error. TLS `starttls` juga **tidak didukung** POP3.
+POP3 note: it has no concept of per-message flags, so `is_read` is always `true`, `unread_count` is always `0`, and `POST /messages/read` returns an error. TLS `starttls` is also **not supported** for POP3.
 
-IMAP bisa **daftar folder** lewat `GET /accounts/{id}/folders` (§7.12) — POP3 selalu `INBOX` dan protokol itu tidak mendukung listing (mengembalikan `400`).
+IMAP can **list folders** via `GET /accounts/{id}/folders` (§7.12) — POP3 is always `INBOX` and that protocol does not support listing (it returns `400`).
 
 ## 2. Quickstart
 
 ```bash
 export BASE=http://localhost:5569
-export XMAIL_API_KEY=changeme   # samakan dengan env server
+export XMAIL_API_KEY=changeme   # match the server env
 
-# Health (tanpa auth)
+# Health (no auth)
 curl -s $BASE/healthz
 
-# Buat akun
+# Create an account
 curl -s -X POST $BASE/accounts \
   -H "X-API-Key: $XMAIL_API_KEY" -H "Content-Type: application/json" \
   -d '{"name":"Gmail","email":"me@example.com","username":"me@example.com","password":"app-pw",
        "smtp":{"host":"smtp.example.com","port":587,"tls_mode":"starttls"},
        "imap":{"host":"imap.example.com","port":993,"tls_mode":"tls"}}'
 
-# Kirim
+# Send
 curl -s -X POST $BASE/accounts/<ID>/send \
   -H "X-API-Key: $XMAIL_API_KEY" -H "Content-Type: application/json" \
   -d '{"to":["bob@example.com"],"subject":"Hi","body_text":"Halo"}'
@@ -80,161 +80,161 @@ curl -s -X POST $BASE/accounts/<ID>/send \
 curl -s "$BASE/accounts/<ID>/messages?limit=10&refresh=true" -H "X-API-Key: $XMAIL_API_KEY"
 ```
 
-## 3. Autentikasi
+## 3. Authentication
 
-| Item | Nilai |
+| Item | Value |
 |---|---|
 | Header | `X-API-Key: <XMAIL_API_KEY>` |
-| Sumber key | env `XMAIL_API_KEY` (satu key statis untuk MVP) |
-| Perbandingan | constant-time (`crypto/subtle`) — aman dari timing attack |
-| Berlaku untuk | semua endpoint **kecuali** `GET /healthz` |
-| Key tidak valid/hilang | `401` dengan `error.code = "unauthorized"` |
+| Key source | env `XMAIL_API_KEY` (a single static key for the MVP) |
+| Comparison | constant-time (`crypto/subtle`) — safe from timing attacks |
+| Applies to | all endpoints **except** `GET /healthz` |
+| Invalid/missing key | `401` with `error.code = "unauthorized"` |
 
 ```bash
-# ditolak (401)
+# rejected (401)
 curl -s $BASE/accounts
 # {"data":null,"error":{"code":"unauthorized","message":"missing or invalid X-API-Key header"}}
 ```
 
-Catatan: key **tidak** disimpan/hash di database — dibaca dari env tiap request. Multi-key/rotatable API key masih backlog (tabel `api_keys` sudah ada tapi belum dipakai).
+Note: the key is **not** stored/hashed in the database — it is read from the env on every request. Multi-key/rotatable API keys are still backlog (the `api_keys` table exists but is not used yet).
 
-## 4. Envelope response & kode error
+## 4. Response envelope & error codes
 
-Setiap response — sukses maupun gagal, semua endpoint — memakai bentuk yang sama:
+Every response — success or failure, on all endpoints — uses the same shape:
 
 ```json
-// Sukses
+// Success
 { "data": <payload>, "error": null }
 
-// Gagal
-{ "data": null, "error": { "code": "<kode>", "message": "<penjelasan>" } }
+// Failure
+{ "data": null, "error": { "code": "<code>", "message": "<explanation>" } }
 ```
 
-`DELETE` pun bukan `204`; ia tetap `200` dengan envelope.
+`DELETE` is not `204` either; it is still `200` with an envelope.
 
-| `error.code` | HTTP | Penyebab |
+| `error.code` | HTTP | Cause |
 |---|---|---|
-| `unauthorized` | 401 | Header `X-API-Key` hilang atau salah |
-| `invalid_json` | 400 | Body bukan JSON valid, atau ada field tak dikenal (decoder pakai `DisallowUnknownFields`) |
-| `validation_failed` | 400 | Field wajib kosong, `tls_mode` tidak valid, POP3 `starttls`, `uid` kosong, protokol tidak mendukung operasi, akun tidak punya konfigurasi protokol tsb, **folder tidak ada di server**, dsb |
-| `not_found` | 404 | `account_id` tidak ada (termasuk setelah dihapus) |
-| `internal_error` | 500 | Error lain: gagal dial server mail, kredensial salah saat kirim, masalah DB/query, dll |
+| `unauthorized` | 401 | Missing or wrong `X-API-Key` header |
+| `invalid_json` | 400 | Body is not valid JSON, or contains an unknown field (the decoder uses `DisallowUnknownFields`) |
+| `validation_failed` | 400 | Required field empty, invalid `tls_mode`, POP3 `starttls`, empty `uid`, protocol does not support the operation, the account has no configuration for that protocol, **folder does not exist on the server**, etc. |
+| `not_found` | 404 | `account_id` does not exist (including after deletion) |
+| `internal_error` | 500 | Other errors: failed to dial the mail server, wrong credentials when sending, DB/query issues, etc. |
 
-Penting: error koneksi/kirim ke server mail membawa pesan asli dari library protokol (mis. `smtp: send: ...`, `imap: login: ...`) tetapi dibungkus kode `internal_error`. Error yang disebabkan input pemanggil (validasi) memakai `validation_failed`.
+Important: connection/send errors to the mail server carry the original message from the protocol library (e.g. `smtp: send: ...`, `imap: login: ...`) but are wrapped in the `internal_error` code. Errors caused by caller input (validation) use `validation_failed`.
 
-**Perubahan perilaku (folder tidak ada):** `GET /messages` dengan `folder` yang tidak ada sekarang `400 validation_failed`, bukan `500`. Berlaku juga untuk `POST /check` dan `POST /messages/read` dengan folder salah. Pesan error menyebut nama folder dan teks dari server (mis. `Unknown Mailbox`). Cek daftar nama folder yang benar lewat `GET /accounts/{id}/folders`. Error yang **bukan** kesalahan input (gagal dial, auth salah, timeout, error IMAP lain) tetap `500`.
+**Behavior change (missing folder):** `GET /messages` with a `folder` that does not exist now returns `400 validation_failed`, not `500`. This also applies to `POST /check` and `POST /messages/read` with a wrong folder. The error message mentions the folder name and the text from the server (e.g. `Unknown Mailbox`). Check the correct folder name list via `GET /accounts/{id}/folders`. Errors that are **not** input mistakes (dial failure, wrong auth, timeout, other IMAP errors) remain `500`.
 
-Body tidak boleh punya field tak dikenal — decoder menolaknya sebagai `invalid_json`. Contoh: mengirim `{"to":["a@b.c"],"Subject":"x"}` (huruf besar) akan gagal.
+The body must not contain unknown fields — the decoder rejects them as `invalid_json`. Example: sending `{"to":["a@b.c"],"Subject":"x"}` (capitalized) will fail.
 
-## 5. Paginasi & semantik cache
+## 5. Pagination & cache semantics
 
-Ini bagian yang paling sering disalahpahami. `GET /accounts/{id}/messages` menerima:
+This is the part that is most often misunderstood. `GET /accounts/{id}/messages` accepts:
 
-| Param | Default | Arti |
+| Param | Default | Meaning |
 |---|---|---|
-| `limit` | `20` | jumlah maks pesan dikembalikan. `<= 0` → default 20 |
-| `offset` | `0` | lewati N pesan **terbaru** |
-| `folder` | `INBOX` | folder IMAP (POP3 mengabaikan, selalu INBOX) |
+| `limit` | `20` | max number of messages returned. `<= 0` → default 20 |
+| `offset` | `0` | skip N **newest** messages |
+| `folder` | `INBOX` | IMAP folder (POP3 ignores it, always INBOX) |
 | `protocol` | `imap` | `imap` \| `pop3` |
-| `refresh` | `false` | `true`/`1` = paksa live dial, abaikan cache |
+| `refresh` | `false` | `true`/`1` = force a live dial, ignore the cache |
 
-**Window** = `limit` pesan terbaru, melewati `offset`. Contoh dengan mailbox 100 pesan (UID terbesar = terbaru):
+**Window** = the `limit` newest messages, skipping `offset`. Example with a mailbox of 100 messages (largest UID = newest):
 
-| Request | Hasil |
+| Request | Result |
 |---|---|
-| `?limit=20&offset=0` | 20 pesan terbaru |
-| `?limit=20&offset=20` | 20 pesan berikutnya (peringkat 21–40) |
-| `?limit=20&offset=200` | `[]` (di luar jumlah pesan) |
-| `?limit=500` | semua pesan yang ada (page pendek) |
+| `?limit=20&offset=0` | 20 newest messages |
+| `?limit=20&offset=20` | the next 20 messages (ranks 21–40) |
+| `?limit=20&offset=200` | `[]` (beyond the number of messages) |
+| `?limit=500` | all existing messages (short page) |
 
-**Cache-first.** Secara default, xmail melayani dari `messages_cache` bila cache sudah **mencakup** window yang diminta — tanpa dial server. Kalau cache belum mencakupnya (mis. window lebih besar dari yang pernah diambil), xmail dial, simpan, lalu balas. `refresh=true` selalu dial.
+**Cache-first.** By default, xmail serves from `messages_cache` if the cache already **covers** the requested window — without dialing the server. If the cache does not cover it (e.g. the window is larger than anything fetched before), xmail dials, stores, then replies. `refresh=true` always dials.
 
-State yang menentukan apakah cache "mencakup" sebuah window:
+State that determines whether the cache "covers" a window:
 
-- **Coverage** — berapa banyak pesan terbaru yang diketahui tercache berurutan dari atas mailbox.
-- **Exhausted** — seluruh mailbox sudah tercache, jadi window apa pun bisa dijawab dari cache.
+- **Coverage** — how many of the newest messages are known to be cached contiguously from the top of the mailbox.
+- **Exhausted** — the entire mailbox is cached, so any window can be answered from the cache.
 
-Konsekuensi praktis:
+Practical consequences:
 
-- Request yang sama dua kali berturut-turut: yang kedua **tidak** dial (hemat koneksi).
-- Minta `limit` lebih besar dari sebelumnya (mis. `limit=50` setelah `limit=20`): cache tidak mencakup → **dial** (tidak diam-diam memotong hasil lama).
-- `POST /check` selalu dial dan mengisi cache untuk 50 pesan terbaru.
-- `refresh=true` memaksa live dial walau cache sudah mencakup.
+- Two consecutive identical requests: the second one does **not** dial (saves a connection).
+- Requesting a larger `limit` than before (e.g. `limit=50` after `limit=20`): the cache does not cover it → it **dials** (it does not silently truncate the old result).
+- `POST /check` always dials and fills the cache for the 50 newest messages.
+- `refresh=true` forces a live dial even if the cache already covers it.
 
-Cache di-key `(account, protocol, folder)` — jadi mengambil protokol/folder berbeda punya cache terpisah, dan `DELETE /accounts/{id}` menghapus seluruh cache akun tsb.
+The cache is keyed by `(account, protocol, folder)` — so fetching a different protocol/folder has a separate cache, and `DELETE /accounts/{id}` deletes the entire cache for that account.
 
-Konsistensi: bila server melaporkan mailbox berubah di atas (mail baru masuk, atau mail dihapus) sehingga posisi cache bergeser, xmail membuang cache key tsb alih-alih menyajikan baris dengan posisi basi. Jadi hasil "dari cache" selalu berupa prefix yang koheren; kalau ragu, pakai `refresh=true`.
+Consistency: if the server reports that the mailbox changed at the top (new mail arrived, or mail was deleted) so that the cache positions shift, xmail discards that cache key instead of serving rows with stale positions. So a "from cache" result is always a coherent prefix; if in doubt, use `refresh=true`.
 
-## 6. Mode TLS & contoh provider
+## 6. TLS modes & provider examples
 
-`tls_mode` per protokol:
+`tls_mode` per protocol:
 
-| Nilai | Arti | Contoh port umum |
+| Value | Meaning | Common port example |
 |---|---|---|
-| `tls` | TLS implicit (koneksi langsung TLS) | SMTP 465, IMAP 993, POP3 995 |
-| `starttls` | konek plaintext lalu upgrade STARTTLS (wajib sukses) | SMTP 587, IMAP 143 |
-| `none` | tanpa TLS sama sekali — **harus dipilih eksplisit** | port test/local |
+| `tls` | Implicit TLS (direct TLS connection) | SMTP 465, IMAP 993, POP3 995 |
+| `starttls` | Connect in plaintext then upgrade with STARTTLS (must succeed) | SMTP 587, IMAP 143 |
+| `none` | no TLS at all — **must be chosen explicitly** | test/local ports |
 
-Aturan validasi:
-- `tls_mode` wajib ada dan salah satu dari tiga nilai di atas untuk tiap protokol yang diisi.
-- `port` wajib 1–65535.
-- `pop3.tls_mode = "starttls"` **ditolak** saat save (library POP3 tidak mendukung) — pakai `tls` atau `none`.
-- Certificate validation aktif default; `none` hanya untuk yang tahu risikonya (kredensial terkirim plaintext).
+Validation rules:
+- `tls_mode` is required and must be one of the three values above for each protocol that is provided.
+- `port` must be 1–65535.
+- `pop3.tls_mode = "starttls"` is **rejected** on save (the POP3 library does not support it) — use `tls` or `none`.
+- Certificate validation is on by default; `none` is only for those who know the risk (credentials are sent in plaintext).
 
-Contoh konfigurasi provider umum (verifikasi ulang di dokumentasi provider — xmail **tidak** mendukung OAuth2, jadi email yang mewajibkan OAuth/app-password perlu app-password):
+Examples of common provider configurations (re-verify in the provider documentation — xmail does **not** support OAuth2, so email accounts that require OAuth/app-password need an app-password):
 
 | Provider | SMTP | IMAP | POP3 |
 |---|---|---|---|
 | Gmail | `smtp.gmail.com:587` / `starttls` | `imap.gmail.com:993` / `tls` | `pop.gmail.com:995` / `tls` |
-| Microsoft 365 / Outlook | `smtp.office365.com:587` / `starttls` | `outlook.office365.com:993` / `tls` | (umumnya nonaktif) |
+| Microsoft 365 / Outlook | `smtp.office365.com:587` / `starttls` | `outlook.office365.com:993` / `tls` | (usually disabled) |
 | Yahoo Mail | `smtp.mail.yahoo.com:465` / `tls` | `imap.mail.yahoo.com:993` / `tls` | `pop.mail.yahoo.com:995` / `tls` |
-| Local/dev (mis. MailHog) | `localhost:1025` / `none` | `localhost:1143` / `none` | `localhost:1110` / `none` |
+| Local/dev (e.g. MailHog) | `localhost:1025` / `none` | `localhost:1143` / `none` | `localhost:1110` / `none` |
 
-Password Gmail/Outlook kemungkinan besar adalah **app-password**, bukan password login biasa.
+Gmail/Outlook passwords are most likely **app-passwords**, not a regular login password.
 
-## 7. Referensi endpoint
+## 7. Endpoint reference
 
-Ringkasan:
+Summary:
 
-| Method | Path | Auth | Deskripsi |
+| Method | Path | Auth | Description |
 |---|---|:---:|---|
-| GET | `/healthz` | tidak | Health check |
-| GET | `/` | tidak | Dashboard web — aset statis HTML/CSS/JS (§12) |
-| POST | `/accounts` | ya | Buat akun → `201` |
-| GET | `/accounts` | ya | List akun → `200` |
-| GET | `/accounts/{id}` | ya | Detail akun → `200` / `404` |
-| PUT | `/accounts/{id}` | ya | Update akun (full replace) → `200` |
-| DELETE | `/accounts/{id}` | ya | Hapus akun → `200` |
-| POST | `/accounts/{id}/test-connection` | ya | Uji koneksi+auth → `200` |
-| POST | `/accounts/{id}/send` | ya | Kirim email → `200` |
-| GET | `/accounts/{id}/folders` | ya | Daftar folder (IMAP) → `200` |
-| GET | `/accounts/{id}/messages` | ya | Fetch (cache-first) → `200` |
-| POST | `/accounts/{id}/check` | ya | Cek email baru → `200` |
-| POST | `/accounts/{id}/messages/read` | ya | Tandai read (IMAP) → `200` |
-| POST | `/mcp` | ya | MCP Streamable HTTP (lihat guide MCP) |
+| GET | `/healthz` | no | Health check |
+| GET | `/` | no | Web dashboard — static HTML/CSS/JS assets (§12) |
+| POST | `/accounts` | yes | Create an account → `201` |
+| GET | `/accounts` | yes | List accounts → `200` |
+| GET | `/accounts/{id}` | yes | Account detail → `200` / `404` |
+| PUT | `/accounts/{id}` | yes | Update account (full replace) → `200` |
+| DELETE | `/accounts/{id}` | yes | Delete account → `200` |
+| POST | `/accounts/{id}/test-connection` | yes | Test connection+auth → `200` |
+| POST | `/accounts/{id}/send` | yes | Send email → `200` |
+| GET | `/accounts/{id}/folders` | yes | List folders (IMAP) → `200` |
+| GET | `/accounts/{id}/messages` | yes | Fetch (cache-first) → `200` |
+| POST | `/accounts/{id}/check` | yes | Check for new email → `200` |
+| POST | `/accounts/{id}/messages/read` | yes | Mark as read (IMAP) → `200` |
+| POST | `/mcp` | yes | MCP Streamable HTTP (see the MCP guide) |
 
 ---
 
 ### 7.1 `GET /healthz`
 
-- **Auth:** tidak.
+- **Auth:** no.
 - **Response `200`:**
 
   ```json
   { "data": { "status": "ok" }, "error": null }
   ```
 
-Dipakai container orchestrator (Docker/k8s) untuk probe liveness tanpa perlu key.
+Used by container orchestrators (Docker/k8s) for liveness probes without needing a key.
 
 ---
 
-### 7.2 `POST /accounts` — buat akun
+### 7.2 `POST /accounts` — create an account
 
-- **Auth:** ya.
-- **Body:** [`accountRequest`](#81-accountrequest) (`password` **wajib**).
-- **Response `201`:** [`accountResponse`](#82-accountresponse) (tanpa kredensial).
+- **Auth:** yes.
+- **Body:** [`accountRequest`](#81-accountrequest) (`password` is **required**).
+- **Response `201`:** [`accountResponse`](#82-accountresponse) (no credentials).
 
-Contoh request:
+Request example:
 
 ```json
 {
@@ -247,7 +247,7 @@ Contoh request:
 }
 ```
 
-Contoh response:
+Response example:
 
 ```json
 {
@@ -268,21 +268,21 @@ Contoh response:
 
 Status:
 
-| Code | Kapan |
+| Code | When |
 |---|---|
-| `201` | Berhasil dibuat |
-| `400 invalid_json` | Body bukan JSON / ada field tak dikenal |
-| `400 validation_failed` | Field wajib kosong, tidak ada protokol, `tls_mode` invalid, POP3 `starttls` |
-| `500 internal_error` | Gagal enkripsi/simpan |
+| `201` | Successfully created |
+| `400 invalid_json` | Body is not JSON / contains an unknown field |
+| `400 validation_failed` | Required field empty, no protocol, invalid `tls_mode`, POP3 `starttls` |
+| `500 internal_error` | Failed to encrypt/store |
 
-Catatan: `id` digenerate server (UUID). Kredensial dienkripsi AES-256-GCM sebelum disimpan; response **tidak pernah** memuat `password`.
+Note: `id` is generated by the server (UUID). Credentials are encrypted with AES-256-GCM before being stored; the response **never** contains `password`.
 
 ---
 
-### 7.3 `GET /accounts` — list akun
+### 7.3 `GET /accounts` — list accounts
 
-- **Auth:** ya. Tanpa parameter.
-- **Response `200`:** array `accountResponse`, diurutkan berdasarkan `name`. Bisa `[]`.
+- **Auth:** yes. No parameters.
+- **Response `200`:** an array of `accountResponse`, sorted by `name`. Can be `[]`.
 
 ```json
 { "data": [ { "id": "...", "name": "Gmail Kerja", "email": "...", "username": "...",
@@ -292,89 +292,89 @@ Catatan: `id` digenerate server (UUID). Kredensial dienkripsi AES-256-GCM sebelu
 
 ---
 
-### 7.4 `GET /accounts/{id}` — detail akun
+### 7.4 `GET /accounts/{id}` — account detail
 
-- **Response `200`:** satu `accountResponse`.
-- **`404 not_found`** bila id tidak ada.
+- **Response `200`:** a single `accountResponse`.
+- **`404 not_found`** if the id does not exist.
 
 ---
 
-### 7.5 `PUT /accounts/{id}` — update akun
+### 7.5 `PUT /accounts/{id}` — update an account
 
-- **Body:** [`accountRequest`](#81-accountrequest), tapi `password` **opsional**.
-- **Response `200`:** `accountResponse` hasil update.
+- **Body:** [`accountRequest`](#81-accountrequest), but `password` is **optional**.
+- **Response `200`:** the updated `accountResponse`.
 
-**Full replace, bukan merge.** Semua field selain `password` wajib dikirim ulang; field protokol (`smtp`/`imap`/`pop3`) yang **tidak** dikirim akan di-`NULL`-kan (efektif menghapus konfigurasi protokol itu). Satu-satunya field opsional adalah `password`:
+**Full replace, not a merge.** All fields other than `password` must be sent again; protocol fields (`smtp`/`imap`/`pop3`) that are **not** sent will be set to `NULL` (effectively removing that protocol configuration). The only optional field is `password`:
 
-| Nilai `password` | Efek |
+| `password` value | Effect |
 |---|---|
-| dikirim string | kredensial diganti dengan nilai baru |
-| `null` / tidak dikirim | kredensial lama dipertahankan |
+| a string is sent | credentials are replaced with the new value |
+| `null` / not sent | the old credentials are kept |
 
-Contoh — ganti nama & hapus konfigurasi POP3, pertahankan kredensial:
+Example — rename and remove the POP3 configuration, keep the credentials:
 
 ```bash
 curl -s -X PUT $BASE/accounts/$ID \
   -H "X-API-Key: $XMAIL_API_KEY" -H "Content-Type: application/json" \
   -d '{"name":"Gmail (renamed)","email":"me@example.com","username":"me@example.com",
        "imap":{"host":"imap.gmail.com","port":993,"tls_mode":"tls"}}'
-# Catatan: smtp & pop3 tidak dikirim -> jadi null
+# Note: smtp & pop3 are not sent -> they become null
 ```
 
-Status: `200` sukses; `400` validasi; `404` bila id tidak ada.
+Status: `200` success; `400` validation; `404` if the id does not exist.
 
 ---
 
-### 7.6 `DELETE /accounts/{id}` — hapus akun
+### 7.6 `DELETE /accounts/{id}` — delete an account
 
 - **Response `200`:** `{ "data": { "deleted": true }, "error": null }`.
-- **`404 not_found`** bila id tidak ada.
+- **`404 not_found`** if the id does not exist.
 
-Menghapus akun sekaligus kredensial & seluruh `messages_cache`-nya (cascade).
+Deleting an account also removes its credentials and its entire `messages_cache` (cascade).
 
 ---
 
-### 7.7 `POST /accounts/{id}/test-connection` — uji koneksi
+### 7.7 `POST /accounts/{id}/test-connection` — test connection
 
-- **Body:** `{ "protocol": "smtp" | "imap" | "pop3" }` (opsional, default `imap`).
+- **Body:** `{ "protocol": "smtp" | "imap" | "pop3" }` (optional, default `imap`).
 - **Response `200`:** `{ "data": { "ok": true }, "error": null }`.
 
-Melakukan connect + login ke protokol yang dipilih **tanpa** mengirim/mengambil apa pun. Cocok untuk memverifikasi kredensial/config sebelum dipakai.
+Performs connect + login to the selected protocol **without** sending/fetching anything. Good for verifying credentials/config before use.
 
-| Code | Kapan |
+| Code | When |
 |---|---|
-| `200` | Konek + auth sukses |
-| `400 validation_failed` | `protocol` tidak dikenal, atau akun tidak punya konfigurasi protokol tsb |
-| `404 not_found` | `account_id` tidak ada |
-| `500 internal_error` | Gagal connect/login (host salah, kredensial salah, TLS mismatch, dst) |
+| `200` | Connect + auth succeeded |
+| `400 validation_failed` | Unknown `protocol`, or the account has no configuration for that protocol |
+| `404 not_found` | `account_id` does not exist |
+| `500 internal_error` | Failed to connect/login (wrong host, wrong credentials, TLS mismatch, etc.) |
 
 ---
 
-### 7.8 `POST /accounts/{id}/send` — kirim email
+### 7.8 `POST /accounts/{id}/send` — send email
 
 - **Body:** [`sendRequest`](#84-sendrequest).
 - **Response `200`:** `{ "data": { "status": "sent" }, "error": null }`.
 
-Field body:
+Body fields:
 
-| Field | Wajib | Catatan |
+| Field | Required | Notes |
 |---|:---:|---|
-| `to` | ya | array email, minimal 1 |
-| `cc` / `bcc` | tidak | array email |
-| `subject` | tidak | |
-| `body_text` | tidak | body plain-text |
-| `body_html` | tidak | body HTML |
-| `attachments` | tidak | `{filename, content_type, data_base64}` |
-| `headers` | tidak | `map[string]string`, custom header dikirim apa adanya |
+| `to` | yes | array of emails, at least 1 |
+| `cc` / `bcc` | no | array of emails |
+| `subject` | no | |
+| `body_text` | no | plain-text body |
+| `body_html` | no | HTML body |
+| `attachments` | no | `{filename, content_type, data_base64}` |
+| `headers` | no | `map[string]string`, custom headers sent as-is |
 
-Aturan body/From:
-- **From** = `account.email` (di-set otomatis; tidak bisa di-override lewat body).
-- Kalau `body_html` **dan** `body_text` diisi → dikirim `multipart/alternative` (HTML utama, plain-text alternatif).
-- Kalau hanya `body_html` → body HTML. Selain itu → plain-text (`body_text`, boleh kosong).
-- `data_base64` di `attachments` di-decode base64 standar; base64 tidak valid → `400 validation_failed`.
-- Saat ini `content_type` pada attachment **tidak dipakai** — tipe MIME lampiran ditentukan otomatis oleh library SMTP dari nama file. Isi tetap dikirim (`data_base64`).
+Body/From rules:
+- **From** = `account.email` (set automatically; it cannot be overridden via the body).
+- If **both** `body_html` **and** `body_text` are set → sent as `multipart/alternative` (HTML primary, plain-text alternative).
+- If only `body_html` → HTML body. Otherwise → plain-text (`body_text`, may be empty).
+- `data_base64` in `attachments` is decoded as standard base64; invalid base64 → `400 validation_failed`.
+- Currently `content_type` on an attachment is **not used** — the MIME type of the attachment is determined automatically by the SMTP library from the file name. The content is still sent (`data_base64`).
 
-Contoh:
+Example:
 
 ```json
 {
@@ -390,16 +390,16 @@ Contoh:
 }
 ```
 
-Status: `200` terkirim; `400` (tanpa `to`, base64 invalid, JSON invalid); `404` id tak ada; `500` gagal kirim/dial/auth.
+Status: `200` sent; `400` (no `to`, invalid base64, invalid JSON); `404` id does not exist; `500` send/dial/auth failure.
 
 ---
 
 ### 7.9 `GET /accounts/{id}/messages` — fetch email
 
-- **Query:** [`limit`, `offset`, `folder`, `protocol`, `refresh`](#5-paginasi--semantik-cache).
-- **Response `200`:** array [`Message`](#83-message) (terbaru dulu).
+- **Query:** [`limit`, `offset`, `folder`, `protocol`, `refresh`](#5-pagination--cache-semantics).
+- **Response `200`:** an array of [`Message`](#83-message) (newest first).
 
-Contoh:
+Example:
 
 ```bash
 curl -s "$BASE/accounts/$ID/messages?protocol=imap&folder=INBOX&limit=5&refresh=true" \
@@ -421,63 +421,63 @@ curl -s "$BASE/accounts/$ID/messages?protocol=imap&folder=INBOX&limit=5&refresh=
 }
 ```
 
-Catatan per protokol:
+Per-protocol notes:
 
 | | IMAP | POP3 |
 |---|---|---|
-| Sumber urutan | UID menurun (UID naik sesuai kedatangan) | urutan UIDL, dibalik (terbaru dulu) |
-| `is_read` | dari flag `\Seen` | selalu `true` (POP3 tak punya flag) |
-| `attachments` | nama file dari BODYSTRUCTURE | selalu kosong (TOP tak memuat struktur body) |
-| `folder` | folder yang diminta | selalu `INBOX` |
-| Body email | tidak diunduh (metadata saja) | tidak diunduh (header saja) |
+| Sort source | descending UID (UID increases with arrival) | UIDL order, reversed (newest first) |
+| `is_read` | from the `\Seen` flag | always `true` (POP3 has no flags) |
+| `attachments` | file names from BODYSTRUCTURE | always empty (TOP does not include the body structure) |
+| `folder` | the requested folder | always `INBOX` |
+| Email body | not downloaded (metadata only) | not downloaded (headers only) |
 
-Status: `200` sukses (termasuk `[]` bila window kosong); `400 validation_failed` bila `protocol` SMTP/invalid, protokol tak terkonfigurasi, atau `folder` tidak ada di server; `404` id tak ada; `500` gagal dial/fetch.
+Status: `200` success (including `[]` when the window is empty); `400 validation_failed` when `protocol` is SMTP/invalid, the protocol is not configured, or `folder` does not exist on the server; `404` id does not exist; `500` dial/fetch failure.
 
 ---
 
-### 7.10 `POST /accounts/{id}/check` — cek email baru
+### 7.10 `POST /accounts/{id}/check` — check for new email
 
-- **Body:** `{ "protocol": "imap" | "pop3", "folder": "INBOX" }` (keduanya opsional; default `imap`/`INBOX`).
+- **Body:** `{ "protocol": "imap" | "pop3", "folder": "INBOX" }` (both optional; default `imap`/`INBOX`).
 - **Response `200`:** [`CheckResult`](#85-checkresult).
 
 ```json
 { "data": { "unread_count": 5, "new_count": 2 }, "error": null }
 ```
 
-Semantik:
+Semantics:
 
-- **`unread_count`** — jumlah unread yang dilaporkan server (IMAP `STATUS ... UNSEEN`). POP3 tidak punya konsep unread → `0`.
-- **`new_count`** — berapa dari **50 pesan terbaru** yang belum ada di `messages_cache` xmail ("baru sejak check terakhir"). Ini **bukan** konsep protokol; dihitung lokal dari cache.
-- Endpoint ini **selalu** dial ke server (tidak cache-first) dan memperbarui cache untuk 50 pesan terbaru — sehingga `GET /messages` dengan window dalam rentang itu setelahnya bisa dilayani dari cache.
+- **`unread_count`** — the number of unread reported by the server (IMAP `STATUS ... UNSEEN`). POP3 has no concept of unread → `0`.
+- **`new_count`** — how many of the **50 newest messages** are not yet in xmail's `messages_cache` ("new since the last check"). This is **not** a protocol concept; it is computed locally from the cache.
+- This endpoint **always** dials the server (not cache-first) and updates the cache for the 50 newest messages — so a subsequent `GET /messages` with a window within that range can be served from the cache.
 
-Status: `200`; `400` protokol invalid/tak terkonfigurasi; `404`; `500` gagal dial.
+Status: `200`; `400` invalid/unconfigured protocol; `404`; `500` dial failure.
 
 ---
 
-### 7.11 `POST /accounts/{id}/messages/read` — tandai sudah dibaca
+### 7.11 `POST /accounts/{id}/messages/read` — mark as read
 
 - **Body:**
 
-  | Field | Wajib | Catatan |
+  | Field | Required | Notes |
   |---|:---:|---|
-  | `uid` | ya | UID pesan (dari hasil `/messages`) |
-  | `protocol` | tidak | default `imap` |
-  | `folder` | tidak | default `INBOX` |
+  | `uid` | yes | message UID (from the `/messages` result) |
+  | `protocol` | no | default `imap` |
+  | `folder` | no | default `INBOX` |
 
 - **Response `200`:** `{ "data": { "marked_read": true }, "error": null }`.
 
-**IMAP only** (menset flag `\Seen`). Untuk `protocol=pop3` → `400 validation_failed` karena POP3 tak punya flag per-pesan. Cache lokal ikut diperbarui sehingga fetch ber-cache berikutnya konsisten.
+**IMAP only** (sets the `\Seen` flag). For `protocol=pop3` → `400 validation_failed` because POP3 has no per-message flags. The local cache is also updated so that subsequent cached fetches are consistent.
 
-Status: `200`; `400` (`uid` kosong, POP3, UID imap tidak valid, folder tidak ada); `404`; `500` gagal dial/store.
+Status: `200`; `400` (empty `uid`, POP3, invalid IMAP UID, folder does not exist); `404`; `500` dial/store failure.
 
 ---
 
-### 7.12 `GET /accounts/{id}/folders` — daftar folder
+### 7.12 `GET /accounts/{id}/folders` — list folders
 
-- **Query:** `?protocol=imap` (opsional, default `imap`).
-- **Response `200`:** array [`Folder`](#86-folder), diurutkan berdasarkan nama.
+- **Query:** `?protocol=imap` (optional, default `imap`).
+- **Response `200`:** an array of [`Folder`](#86-folder), sorted by name.
 
-Dipakai untuk mengetahui nama folder yang benar sebelum memanggil `/messages` — nama folder IMAP bergantung server/akun (mis. Gmail berbahasa Indonesia memakai `[Gmail]/Surat Terkirim`, bukan `[Gmail]/Sent Mail`). Tiap entri membawa `attributes` peran (mis. `\Sent`, `\Drafts`) sehingga klien bisa memetakan folder pentingnya sendiri.
+Used to find out the correct folder names before calling `/messages` — IMAP folder names depend on the server/account (e.g. an Indonesian-language Gmail uses `[Gmail]/Surat Terkirim`, not `[Gmail]/Sent Mail`). Each entry carries role `attributes` (e.g. `\Sent`, `\Drafts`) so clients can map the folders they care about themselves.
 
 ```bash
 curl -s "$BASE/accounts/$ID/folders" -H "X-API-Key: $XMAIL_API_KEY"
@@ -494,57 +494,57 @@ curl -s "$BASE/accounts/$ID/folders" -H "X-API-Key: $XMAIL_API_KEY"
 }
 ```
 
-Catatan:
+Notes:
 
-- Selalu **live** ke server (satu perintah `LIST` yang murah; tidak di-cache).
-- `delimiter` di-omit bila server melaporkan NIL; `attributes` di-omit bila kosong.
-- Entri `\Noselect` dikembalikan apa adanya (tidak difilter) — entri itu **tidak bisa** di-`SELECT`, jadi fetch ke folder tersebut akan `400`.
-- Selalu `[]` (bukan `null`) bila server tidak melaporkan folder apa pun.
+- Always **live** to the server (a single cheap `LIST` command; not cached).
+- `delimiter` is omitted when the server reports NIL; `attributes` is omitted when empty.
+- `\Noselect` entries are returned as-is (not filtered) — such an entry **cannot** be `SELECT`ed, so fetching that folder will `400`.
+- Always `[]` (not `null`) when the server does not report any folders.
 
 Status:
 
-| Code | Kapan |
+| Code | When |
 |---|---|
-| `200` | Berhasil (termasuk `[]`) |
-| `400 validation_failed` | `protocol` bukan IMAP (`pop3`/`smtp`), akun tidak punya konfigurasi protokol tsb, atau protokol tidak didukung |
-| `404 not_found` | `account_id` tidak ada |
-| `500 internal_error` | Gagal dial/login ke server, atau `LIST` gagal |
+| `200` | Success (including `[]`) |
+| `400 validation_failed` | `protocol` is not IMAP (`pop3`/`smtp`), the account has no configuration for that protocol, or the protocol is not supported |
+| `404 not_found` | `account_id` does not exist |
+| `500 internal_error` | Failed to dial/login to the server, or `LIST` failed |
 
-## 8. Referensi tipe data
+## 8. Data type reference
 
 ### 8.1 `accountRequest`
 
-Body `POST`/`PUT /accounts`.
+Body of `POST`/`PUT /accounts`.
 
-| Field | Tipe | Wajib (create) | Wajib (update) | Catatan |
+| Field | Type | Required (create) | Required (update) | Notes |
 |---|---|:---:|:---:|---|
-| `name` | string | ya | ya | nama tampilan |
-| `email` | string | ya | ya | jadi alamat **From** saat kirim |
-| `username` | string | ya | ya | username login server |
-| `password` | string \| null | ya | tidak | `null` di update = pertahankan kredensial lama |
-| `smtp` | `Connection` \| null | salah satu protokol | ya (bila ingin dipertahankan) | |
-| `imap` | `Connection` \| null | salah satu protokol | ya | |
-| `pop3` | `Connection` \| null | salah satu protokol | ya | |
+| `name` | string | yes | yes | display name |
+| `email` | string | yes | yes | becomes the **From** address when sending |
+| `username` | string | yes | yes | server login username |
+| `password` | string \| null | yes | no | `null` on update = keep the old credentials |
+| `smtp` | `Connection` \| null | one of the protocols | yes (if it is to be kept) | |
+| `imap` | `Connection` \| null | one of the protocols | yes | |
+| `pop3` | `Connection` \| null | one of the protocols | yes | |
 
-Minimal satu dari `smtp`/`imap`/`pop3` harus non-null.
+At least one of `smtp`/`imap`/`pop3` must be non-null.
 
 ### 8.2 `accountResponse`
 
-Dikembalikan semua endpoint akun. **Tidak pernah** berisi kredensial.
+Returned by all account endpoints. **Never** contains credentials.
 
-| Field | Tipe | Catatan |
+| Field | Type | Notes |
 |---|---|---|
 | `id` | string | UUID |
 | `name` | string | |
 | `email` | string | |
 | `username` | string | |
-| `smtp` / `imap` / `pop3` | `Connection` \| null | `null` = protokol tidak dikonfigurasi |
+| `smtp` / `imap` / `pop3` | `Connection` \| null | `null` = protocol not configured |
 | `created_at` | string | RFC3339 UTC |
 | `updated_at` | string | RFC3339 UTC |
 
 `Connection`:
 
-| Field | Tipe | Nilai |
+| Field | Type | Value |
 |---|---|---|
 | `host` | string | hostname |
 | `port` | int | 1–65535 |
@@ -552,54 +552,54 @@ Dikembalikan semua endpoint akun. **Tidak pernah** berisi kredensial.
 
 ### 8.3 `Message`
 
-| Field | Tipe | Catatan |
+| Field | Type | Notes |
 |---|---|---|
-| `uid` | string | UID dari server (IMAP UID / POP3 UIDL) |
-| `folder` | string | folder asal (POP3 selalu `INBOX`) |
+| `uid` | string | UID from the server (IMAP UID / POP3 UIDL) |
+| `folder` | string | source folder (POP3 is always `INBOX`) |
 | `subject` | string | |
-| `from` | string | alamat pertama dari header From |
-| `to` | string | alamat pertama dari header To |
+| `from` | string | first address from the From header |
+| `to` | string | first address from the To header |
 | `date` | string | RFC3339 UTC |
-| `is_read` | bool | IMAP flag `\Seen`; POP3 selalu `true` |
-| `attachments` | string[] | **nama file saja**; di-omit bila kosong; POP3 selalu kosong |
+| `is_read` | bool | IMAP `\Seen` flag; POP3 always `true` |
+| `attachments` | string[] | **file names only**; omitted when empty; POP3 always empty |
 
 ### 8.4 `sendRequest`
 
-| Field | Tipe | Wajib |
+| Field | Type | Required |
 |---|---|:---:|
-| `to` | string[] | ya |
-| `cc` / `bcc` | string[] | tidak |
-| `subject` | string | tidak |
-| `body_text` / `body_html` | string | tidak |
-| `attachments` | `Attachment[]` | tidak |
-| `headers` | object `map[string]string` | tidak |
+| `to` | string[] | yes |
+| `cc` / `bcc` | string[] | no |
+| `subject` | string | no |
+| `body_text` / `body_html` | string | no |
+| `attachments` | `Attachment[]` | no |
+| `headers` | object `map[string]string` | no |
 
-`Attachment`: `{ "filename": string, "content_type": string, "data_base64": string }` (isi = base64 standar).
+`Attachment`: `{ "filename": string, "content_type": string, "data_base64": string }` (content = standard base64).
 
 ### 8.5 `CheckResult`
 
-| Field | Tipe | Catatan |
+| Field | Type | Notes |
 |---|---|---|
-| `unread_count` | int | IMAP saja; POP3 = 0 |
-| `new_count` | int | dari 50 pesan terbaru yang belum tercache |
+| `unread_count` | int | IMAP only; POP3 = 0 |
+| `new_count` | int | of the 50 newest messages, those not yet cached |
 
 ### 8.6 `Folder`
 
-Dikembalikan `GET /accounts/{id}/folders`.
+Returned by `GET /accounts/{id}/folders`.
 
-| Field | Tipe | Catatan |
+| Field | Type | Notes |
 |---|---|---|
-| `name` | string | nama mailbox persis seperti di server (pakai ini untuk query `folder`) |
-| `delimiter` | string | pemisah hierarki (mis. `/`); di-omit bila server melaporkan NIL |
-| `attributes` | string[] | atribut mailbox (mis. `\Sent`, `\Drafts`, `\Noselect`, `\HasChildren`); di-omit bila kosong |
+| `name` | string | exact mailbox name as on the server (use this for the `folder` query) |
+| `delimiter` | string | hierarchy separator (e.g. `/`); omitted when the server reports NIL |
+| `attributes` | string[] | mailbox attributes (e.g. `\Sent`, `\Drafts`, `\Noselect`, `\HasChildren`); omitted when empty |
 
-## 9. Walkthrough end-to-end
+## 9. End-to-end walkthrough
 
 ```bash
 export BASE=http://localhost:5569
 export XMAIL_API_KEY=changeme
 
-# 1) Buat akun & tangkap id
+# 1) Create an account & capture the id
 RESP=$(curl -s -X POST $BASE/accounts \
   -H "X-API-Key: $XMAIL_API_KEY" -H "Content-Type: application/json" \
   -d '{"name":"Gmail","email":"me@example.com","username":"me@example.com","password":"app-pw",
@@ -608,82 +608,81 @@ RESP=$(curl -s -X POST $BASE/accounts \
 ID=$(echo "$RESP" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 echo "account id = $ID"
 
-# 2) Validasi koneksi tiap protokol
+# 2) Validate the connection for each protocol
 curl -s -X POST $BASE/accounts/$ID/test-connection -H "X-API-Key: $XMAIL_API_KEY" \
   -H "Content-Type: application/json" -d '{"protocol":"smtp"}'
 curl -s -X POST $BASE/accounts/$ID/test-connection -H "X-API-Key: $XMAIL_API_KEY" \
   -H "Content-Type: application/json" -d '{"protocol":"imap"}'
 
-# 3) Kirim email
+# 3) Send an email
 curl -s -X POST $BASE/accounts/$ID/send -H "X-API-Key: $XMAIL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"to":["bob@example.com"],"subject":"Halo","body_text":"Pesan percobaan."}'
 
-# 4) Cek email baru (mengisi cache 50 terbaru)
+# 4) Check for new email (fills the cache with the 50 newest)
 curl -s -X POST $BASE/accounts/$ID/check -H "X-API-Key: $XMAIL_API_KEY" \
   -H "Content-Type: application/json" -d '{"protocol":"imap"}'
 
-# 5) Fetch dari cache (cepat, tanpa dial)
+# 5) Fetch from cache (fast, no dial)
 curl -s "$BASE/accounts/$ID/messages?limit=10" -H "X-API-Key: $XMAIL_API_KEY"
 
-# 6) Fetch live untuk memastikan terbaru
+# 6) Fetch live to make sure it is the latest
 curl -s "$BASE/accounts/$ID/messages?limit=10&refresh=true" -H "X-API-Key: $XMAIL_API_KEY"
 
-# 7) Tandai satu pesan sudah dibaca (pakai uid dari langkah 5)
+# 7) Mark one message as read (use the uid from step 5)
 curl -s -X POST $BASE/accounts/$ID/messages/read -H "X-API-Key: $XMAIL_API_KEY" \
   -H "Content-Type: application/json" -d '{"uid":"1042"}'
 
-# 8) Bersihkan
+# 8) Clean up
 curl -s -X DELETE $BASE/accounts/$ID -H "X-API-Key: $XMAIL_API_KEY"
 ```
 
 ## 10. Troubleshooting / FAQ
 
-| Gejala | Penyebab & solusi |
+| Symptom | Cause & solution |
 |---|---|
-| `401 unauthorized` | `X-API-Key` salah/hilang. Samakan dengan env `XMAIL_API_KEY` server. |
-| `400 invalid_json` padahal JSON kelihatan benar | Ada **field tak dikenal** (decoder strict), atau nama field salah huruf besar/kecil. Hanya field di dokumen ini yang diterima. |
-| `400 validation_failed: at least one of smtp, imap, pop3 must be configured` | Kirim minimal satu blok protokol dengan `host`, `port`, `tls_mode`. |
-| `400 ... pop3.tls_mode "starttls" is not supported` | POP3 hanya `tls` atau `none`. |
-| `500` saat `/messages` atau `/check` | Server mail tidak bisa dihubungi / kredensial salah / akun tidak punya konfigurasi protokol tsb (cek pesan error). Coba `/test-connection` dulu. |
-| `500` saat `/send` dengan `internal_error` | Umumnya auth SMTP gagal atau From (`account.email`) ditolak server. Verifikasi app-password & alamat From. |
-| Field yang saya kirim hilang setelah `PUT` | `PUT` = full replace. Field yang tak dikirim jadi `null`. |
-| Fetch kedua terasa "tidak update" | Itu perilaku cache-first. Pakai `refresh=true` untuk memaksa live. |
-| `new_count` kecil/0 tapi ada email baru | `new_count` dihitung dari 50 pesan terbaru vs cache lokal, bukan total mailbox. |
-| Attachment terkirim tapi tipenya aneh | `content_type` tidak dipakai; tipe ditentukan dari ekstensi `filename`. |
-| `mark read` gagal untuk POP3 | Pop3 tidak mendukung flag per-pesan. Pakai IMAP. |
-| Butuh key berbeda per client | Belum didukung (single static key). Multi-key/rotatable masih backlog. |
+| `401 unauthorized` | Wrong/missing `X-API-Key`. Match it with the server's `XMAIL_API_KEY` env. |
+| `400 invalid_json` even though the JSON looks correct | There is an **unknown field** (strict decoder), or a field name has the wrong case. Only the fields in this document are accepted. |
+| `400 validation_failed: at least one of smtp, imap, pop3 must be configured` | Send at least one protocol block with `host`, `port`, `tls_mode`. |
+| `400 ... pop3.tls_mode "starttls" is not supported` | POP3 supports only `tls` or `none`. |
+| `500` on `/messages` or `/check` | The mail server cannot be reached / wrong credentials / the account has no configuration for that protocol (check the error message). Try `/test-connection` first. |
+| `500` on `/send` with `internal_error` | Usually SMTP auth failed or the From (`account.email`) was rejected by the server. Verify the app-password & the From address. |
+| Fields I sent disappear after `PUT` | `PUT` = full replace. Fields that are not sent become `null`. |
+| The second fetch seems "not to update" | That is cache-first behavior. Use `refresh=true` to force a live fetch. |
+| `new_count` is small/0 but there is new email | `new_count` is computed from the 50 newest messages vs the local cache, not the whole mailbox. |
+| An attachment is sent but its type is odd | `content_type` is not used; the type is determined from the `filename` extension. |
+| `mark read` fails for POP3 | POP3 does not support per-message flags. Use IMAP. |
+| I need a different key per client | Not supported yet (single static key). Multi-key/rotatable is still backlog. |
 
-## 11. Import ke Postman
+## 11. Importing into Postman
 
-1. Postman → **Import** → pilih `docs/postman/xmail.postman_collection.json` **dan** `docs/postman/xmail.postman_environment.json`.
-2. Pilih environment **xmail (local)**.
-3. Set variabel `apiKey` sesuai `XMAIL_API_KEY` server.
-4. Jalankan **Health → Healthz** untuk memverifikasi koneksi.
-5. Jalankan **Accounts → Create Account** — test script otomatis mengisi `accountId`, sehingga request `{id}` lainnya siap dipakai.
+1. Postman → **Import** → select `docs/postman/xmail.postman_collection.json` **and** `docs/postman/xmail.postman_environment.json`.
+2. Select the **xmail (local)** environment.
+3. Set the `apiKey` variable to the server's `XMAIL_API_KEY`.
+4. Run **Health → Healthz** to verify the connection.
+5. Run **Accounts → Create Account** — the test script automatically fills in `accountId`, so the other `{id}` requests are ready to use.
 
-Koleksi memuat request untuk tiap endpoint, contoh body, contoh skenario error (401/400/404), serta request MCP mentah. Lihat [`docs/postman/README.md`](./postman/README.md) untuk daftar lengkapnya.
+The collection contains a request for each endpoint, example bodies, example error scenarios (401/400/404), and raw MCP requests. See [`docs/postman/README.md`](./postman/README.md) for the full list.
 
-## 12. Dashboard web
+## 12. Web dashboard
 
-Binary xmail juga menyajikan dashboard web untuk **manajemen akun** (CRUD + uji konektivitas). Dashboard **bukan** API baru — ia klien yang memanggil endpoint di §7 lewat `fetch` dari browser.
+The xmail binary also serves a web dashboard for **account management** (CRUD + connectivity tests). The dashboard is **not** a new API — it is a client that calls the endpoints in §7 via `fetch` from the browser.
 
-| Item | Nilai |
+| Item | Value |
 |---|---|
-| URL | `http://localhost:5569` (atau alamat `XMAIL_LISTEN_ADDR`) — dari tray Windows tersedia menu **Open dashboard** |
-| Aset | `GET /`, `GET /app.js`, `GET /style.css` — **tanpa auth**, di-`go:embed` ke binary |
-| Auth dashboard | halaman login menerima `XMAIL_API_KEY`, menyimpannya di `sessionStorage`, lalu mengirimnya sebagai header `X-API-Key` pada setiap panggilan API |
-| Cakupan | list/detail/create/update/delete akun + `POST /accounts/{id}/test-connection` per protokol |
-| Bukan cakupan | kirim email, fetch/check pesan, mark-read, daftar folder (tetap REST/MCP) |
-| Header respons aset | `Content-Security-Policy: default-src 'self'`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-cache` |
+| URL | `http://localhost:5569` (or the `XMAIL_LISTEN_ADDR` address) — the Windows tray has an **Open dashboard** menu |
+| Assets | `GET /`, `GET /app.js`, `GET /style.css` — **no auth**, `go:embed`-ed into the binary |
+| Dashboard auth | the login page accepts the `XMAIL_API_KEY`, stores it in `sessionStorage`, then sends it as the `X-API-Key` header on every API call |
+| Scope | list/detail/create/update/delete accounts + `POST /accounts/{id}/test-connection` per protocol |
+| Out of scope | send email, fetch/check messages, mark-read, list folders (still REST/MCP) |
+| Asset response headers | `Content-Security-Policy: default-src 'self'`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-cache` |
 
-Yang penting untuk integrasi:
+Key points for integration:
 
-- Endpoint API (`/accounts`, `/mcp`) **tetap** wajib `X-API-Key`; mengakses dashboard tidak memberi akses API. `GET /` hanya mengembalikan aset statis (tanpa rahasia) — lihat `docs/adr/0002-dashboard-serving-and-auth.md`.
-- Karena dashboard disajikan **same-origin**, tidak ada CORS; tidak perlu preflight.
-- Password akun tidak pernah dikembalikan API (`§7.5`), jadi form edit selalu menampilkan field password kosong: kosongkan = pertahankan kredensial lama.
-- `PUT /accounts/{id}` adalah **full replace**; form dashboard selalu mengirim ulang seluruh field, jadi perilakunya konsisten dengan §7.5.
-- Path non-API yang tidak ada (mis. `/nope`) dijawab `404` oleh file server, bukan envelope JSON.
+- API endpoints (`/accounts`, `/mcp`) **still** require `X-API-Key`; accessing the dashboard does not grant API access. `GET /` only returns static assets (no secrets) — see `docs/adr/0002-dashboard-serving-and-auth.md`.
+- Because the dashboard is served **same-origin**, there is no CORS; no preflight is needed.
+- Account passwords are never returned by the API (`§7.5`), so the edit form always shows an empty password field: leaving it empty = keep the old credentials.
+- `PUT /accounts/{id}` is a **full replace**; the dashboard form always resends all fields, so its behavior is consistent with §7.5.
+- A non-API path that does not exist (e.g. `/nope`) is answered with `404` by the file server, not with a JSON envelope.
 
-Batasan keamanan: bila `XMAIL_LISTEN_ADDR` tidak di-bind ke loopback, dashboard & API dapat dijangkau dari jaringan — batasi dengan firewall/reverse-proxy dan jaga kerahasiaan `XMAIL_API_KEY`.
-
+Security limitation: if `XMAIL_LISTEN_ADDR` is not bound to loopback, the dashboard & API can be reached from the network — restrict it with a firewall/reverse proxy and keep `XMAIL_API_KEY` secret.

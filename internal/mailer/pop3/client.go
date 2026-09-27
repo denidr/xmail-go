@@ -1,6 +1,5 @@
 // Package pop3 implements mailer.Fetcher using github.com/knadh/go-pop3.
 // POP3 has no folder concept, so folder is always ignored/"INBOX".
-// See PLAN.md Fase 4.
 package pop3
 
 import (
@@ -33,7 +32,7 @@ var _ mailer.Fetcher = (*Client)(nil)
 
 // connect dials and authenticates. Mapping account.TLSMode:
 //   - TLSModeTLS  -> implicit TLS (POP3S, e.g. port 995)
-//   - TLSModeNone -> no TLS at all (must be explicitly configured, see PRD.MD §8)
+//   - TLSModeNone -> no TLS at all (must be explicitly configured)
 //   - TLSModeStartTLS -> NOT supported by the underlying go-pop3 client
 //     (it has no STARTTLS implementation); returns a clear error rather
 //     than silently downgrading to plaintext or guessing implicit TLS.
@@ -70,9 +69,9 @@ func (c *Client) TestConnection(ctx context.Context) error {
 
 // Fetch returns up to limit messages (most recent first), skipping
 // offset. Only headers are downloaded (via TOP, 0 body lines) — not
-// the full message body — matching PLAN.md §2 messages_cache schema
-// (metadata only). POP3 has no per-message read/unread flag, so
-// IsRead is always reported true.
+// the full message body (metadata only, matching the messages_cache
+// schema). POP3 has no per-message read/unread flag, so IsRead is
+// always reported true.
 func (c *Client) Fetch(ctx context.Context, folder string, limit, offset int) ([]mailer.Message, error) {
 	conn, err := c.connect()
 	if err != nil {

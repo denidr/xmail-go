@@ -85,10 +85,10 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAccountDelete implements DELETE /accounts/{id}. Returns 200
-// with the standard {data,error} envelope rather than 204 No Content
-// — PLAN.md §3 documents "Semua response: {data, error}" for every
-// endpoint with no carve-out for delete, and a bare 204 broke that
-// contract for any client that always parses the envelope.
+// with the standard {data,error} envelope rather than 204 No Content —
+// every endpoint shares that "all responses: {data, error}" contract
+// with no carve-out for delete, and a bare 204 broke it for any client
+// that always parses the envelope.
 func (s *Server) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.service.Delete(r.Context(), id); err != nil {

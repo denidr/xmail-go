@@ -1,6 +1,5 @@
 // Package cryptox provides at-rest encryption for account credentials
-// stored in SQLite. See PLAN.md §0 (AES-256-GCM, key from
-// XMAIL_ENCRYPTION_KEY).
+// stored in SQLite (AES-256-GCM, key from XMAIL_ENCRYPTION_KEY).
 package cryptox
 
 import (

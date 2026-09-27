@@ -10,8 +10,8 @@ build:
 run:
 	go run ./cmd/xmail
 
-# Unit tests only — fast, no network/docker (see PLAN.md §6.1). Must be
-# green before any phase in PLAN.md §5 is considered done.
+# Unit tests only — fast, no network/docker. Must be
+# green before any phase is considered done.
 test:
 	go test ./...
 
@@ -29,13 +29,12 @@ test-all:
 	bash scripts/test.sh
 
 # Integration tests (build tag "integration") — in-process fake SMTP/IMAP/
-# POP3 servers, no external docker needed. See PLAN.md §6.2.
+# POP3 servers, no external docker needed.
 test-integration:
 	go test -tags integration ./...
 
 # Race detector — required before every Docker/Windows release build
-# (API server + MCP server + mailer clients run concurrently). See
-# PLAN.md §6.4.
+# (API server + MCP server + mailer clients run concurrently).
 test-race:
 	go test -race -tags integration ./...
 
@@ -52,8 +51,8 @@ docker-build:
 docker-run:
 	docker run --rm -p 5569:5569 -v xmail-data:/app/data --env-file .env $(DOCKER_IMAGE):local
 
-## --- Release builds: 3 target platforms (see PLAN.md "Release Build" and
-## scripts/release.sh, ARCHITECTURE.md "Build & Release"). These targets are
+## --- Release builds: 3 target platforms (see ARCHITECTURE.md
+## "Build & Release" and scripts/release.sh). These targets are
 ## thin wrappers — all real logic (artifact packaging, checksums, version
 ## detection) lives in the script, so it also works standalone in CI without
 ## make. Artifacts land in dist/, not bin/.

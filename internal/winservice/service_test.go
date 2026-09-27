@@ -75,7 +75,7 @@ func TestBuildServiceConfig_EnvVarsRoundTrip(t *testing.T) {
 		t.Errorf("DBPath = %q, want an absolute path", reloaded.DBPath)
 	}
 	// Regression: XMAIL_MCP_STDIO used to be silently dropped from
-	// EnvVars entirely — see PLAN.md §10.7.
+	// EnvVars entirely.
 	if !reloaded.MCPStdioEnable {
 		t.Error("MCPStdioEnable = false after EnvVars round-trip, want true (XMAIL_MCP_STDIO must be propagated)")
 	}

@@ -1,5 +1,5 @@
--- Fixes a real ordering bug (found by external code review, see
--- PLAN.md §10.5 #15): MessageCache.Upsert shares one `fetched_at` value
+-- Fixes a real ordering bug (found by external code review):
+-- MessageCache.Upsert shares one `fetched_at` value
 -- across an entire batch, so ORDER BY fetched_at DESC, rowid DESC fell
 -- back to rowid DESC to break ties within a batch — but SQLite assigns
 -- rowids in insertion order, and Upsert inserts messages

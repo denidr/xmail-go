@@ -3,7 +3,7 @@
 // list_folders),
 // so MCP clients (Claude Desktop, Claude Code, etc.) can use them
 // directly. Delegates to the same account.Service used by internal/api
-// — no duplicated business logic. See PLAN.md §4, Fase 5.
+// — no duplicated business logic.
 package mcpserver
 
 import (
@@ -35,7 +35,7 @@ type Server struct {
 	service *account.Service
 }
 
-// New builds a Server with all 5 tools registered (see PLAN.md §4).
+// New builds a Server with all 5 tools registered.
 // version is reported to MCP clients during the initialize handshake —
 // callers pass the same build-time-stamped version used everywhere
 // else (see cmd/xmail's and cmd/xmail-tray's `version` var, set via
@@ -129,7 +129,7 @@ func (s *Server) registerTools() {
 
 // accountSummary is the shape returned by list_accounts — intentionally
 // separate from internal/api's DTOs and from account.Account: never
-// includes connection config or credentials (see PRD.MD §8).
+// includes connection config or credentials.
 type accountSummary struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
@@ -158,10 +158,10 @@ type sendEmailArgs struct {
 	BodyHTML  string            `json:"body_html,omitempty"`
 	Headers   map[string]string `json:"headers,omitempty"`
 	// No attachment support here — unlike REST, kept that way
-	// deliberately (see PLAN.md §10.6): base64-encoding binary
-	// attachments into MCP tool call arguments is a poor fit for how
-	// MCP clients typically construct tool calls, whereas REST's JSON
-	// body already has to support it either way.
+	// deliberately: base64-encoding binary attachments into MCP tool
+	// call arguments is a poor fit for how MCP clients typically
+	// construct tool calls, whereas REST's JSON body already has to
+	// support it either way.
 }
 
 func (s *Server) handleSendEmail(ctx context.Context, req mcp.CallToolRequest, args sendEmailArgs) (*mcp.CallToolResult, error) {

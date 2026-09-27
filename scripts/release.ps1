@@ -3,8 +3,8 @@
   xmail release build script (PowerShell / native Windows version).
 
 .DESCRIPTION
-  Builds distributable artifacts for the 3 release targets defined in
-  PLAN.md §0.1. Functionally equivalent to scripts/release.sh — use
+  Builds distributable artifacts for the 3 release targets. Functionally
+  equivalent to scripts/release.sh — use
   this one if you don't have Git Bash/WSL; use release.sh from Git
   Bash/WSL/Linux/macOS/CI. Both write to dist/ and both are safe to
   re-run (each target only touches its own output).

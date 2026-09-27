@@ -1,6 +1,6 @@
 // Package api implements the REST API layer for xmail: routing,
 // middleware, and HTTP handlers that delegate to internal/account and
-// internal/mailer. See PLAN.md §3.
+// internal/mailer. See docs/API.md.
 package api
 
 import (
@@ -20,15 +20,15 @@ type Server struct {
 }
 
 // NewServer builds a Server ready to ListenAndServe, with all routes
-// from PLAN.md §3 registered. mcpHandler is optional (nil skips
+// registered. mcpHandler is optional (nil skips
 // mounting it) — see internal/mcpserver.Server.HTTPHandler, wired in
-// by internal/app so the MCP server (Fase 5) shares this same HTTP
+// by internal/app so the MCP server shares this same HTTP
 // server, port, and API-key auth instead of needing a separate one.
 //
 // dashboardHandler is also optional (nil keeps the previous behavior:
 // every path goes through the API-key middleware). When set, it serves
 // the web dashboard's static assets for every path that is not part of
-// the API — see isAPIPath and PLAN-DASHBOARD.md §2.2.
+// the API — see isAPIPath.
 func NewServer(apiKey string, service *account.Service, mcpHandler, dashboardHandler http.Handler) *Server {
 	s := &Server{
 		mux:        http.NewServeMux(),
@@ -43,7 +43,7 @@ func NewServer(apiKey string, service *account.Service, mcpHandler, dashboardHan
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		// Same {data,error} envelope as every other route (PRD.MD §7);
+		// Same {data,error} envelope as every other route;
 		// only the auth exemption is special (see Handler).
 		writeData(w, http.StatusOK, map[string]string{"status": "ok"})
 	})

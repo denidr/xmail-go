@@ -1,9 +1,9 @@
 //go:build integration
 
-// Fake POP3 server for integration testing (see PLAN.md §6.2): the
-// Go ecosystem has no common in-process POP3 test server, so this
-// implements just enough of RFC 1939 (USER/PASS/NOOP/UIDL/TOP/QUIT)
-// to exercise internal/mailer/pop3.Client without a real mailbox.
+// Fake POP3 server for integration testing: the Go ecosystem has no
+// common in-process POP3 test server, so this implements just enough of
+// RFC 1939 (USER/PASS/NOOP/UIDL/TOP/QUIT) to exercise
+// internal/mailer/pop3.Client without a real mailbox.
 package pop3
 
 import (

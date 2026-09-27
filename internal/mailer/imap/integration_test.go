@@ -53,9 +53,8 @@ type fakeState struct {
 }
 
 // fakeSession implements imapserver.Session with just enough behavior
-// to exercise Client.Fetch/Check/TestConnection/MarkRead (see PLAN.md
-// §6.2: IMAP integration test uses an in-process imapserver, not a
-// real mailbox).
+// to exercise Client.Fetch/Check/TestConnection/MarkRead (an in-process
+// imapserver, not a real mailbox).
 type fakeSession struct {
 	state *fakeState
 }
@@ -290,8 +289,7 @@ func TestIntegration_TestConnection_WrongPassword(t *testing.T) {
 
 // TestIntegration_ListFolders proves IMAP LIST is wired end to end:
 // every mailbox comes back with its delimiter/attributes, and the
-// result is sorted by name regardless of the server's response order
-// (PLAN-FOLDERS.md §3.3).
+// result is sorted by name regardless of the server's response order.
 func TestIntegration_ListFolders(t *testing.T) {
 	host, port := startTestServer(t)
 	c := New(account.ConnectionConfig{Host: host, Port: port, TLSMode: account.TLSModeNone}, testUsername, testPassword)
@@ -368,8 +366,8 @@ func TestIntegration_Fetch_ZeroLimit(t *testing.T) {
 }
 
 // TestIntegration_Fetch_Attachments proves the attachment filename
-// list (PRD.MD §6.3) actually comes back from a real BODYSTRUCTURE
-// fetch/parse round trip, not just that mailer.Message has the field.
+// list actually comes back from a real BODYSTRUCTURE fetch/parse round
+// trip, not just that mailer.Message has the field.
 func TestIntegration_Fetch_Attachments(t *testing.T) {
 	host, port := startTestServer(t)
 	c := New(account.ConnectionConfig{Host: host, Port: port, TLSMode: account.TLSModeNone}, testUsername, testPassword)
@@ -400,8 +398,8 @@ func TestIntegration_Fetch_Attachments(t *testing.T) {
 }
 
 // TestIntegration_MarkRead proves MarkRead actually sends STORE +FLAGS
-// \Seen and that a subsequent Fetch reflects it — see PRD.MD §6.3
-// "mark as read" and CODE_REVIEW.md "requirement hilang".
+// \Seen and that a subsequent Fetch reflects it (see CODE_REVIEW.md
+// "missing requirement").
 func TestIntegration_MarkRead(t *testing.T) {
 	host, port := startTestServer(t)
 	c := New(account.ConnectionConfig{Host: host, Port: port, TLSMode: account.TLSModeNone}, testUsername, testPassword)

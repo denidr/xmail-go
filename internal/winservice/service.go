@@ -4,7 +4,7 @@
 // (via github.com/kardianos/service), so it can keep running in the
 // background without a logged-in user or visible tray icon. Used by
 // cmd/xmail-tray's "Install as Windows Service" / "Uninstall" / "Start" /
-// "Stop" menu actions. See PLAN.md "Release Build — Windows x64".
+// "Stop" menu actions.
 //
 // Excluded from the default build (custom tag "xmailtray" must be
 // passed explicitly, see Makefile release-windows-amd64) so the Docker
@@ -82,7 +82,7 @@ func (p *program) Stop(s service.Service) error {
 // immediately for a missing XMAIL_API_KEY/XMAIL_ENCRYPTION_KEY and the
 // installed service can never actually start — kardianos does support
 // EnvVars on Windows (writes them into the service's registry entry),
-// we just weren't setting it. Caught by code review; see PLAN.md §10.6.
+// we just weren't setting it. Caught by code review.
 func New(cfg config.Config, version string) (service.Service, error) {
 	svcConfig, err := buildServiceConfig(cfg)
 	if err != nil {
@@ -111,7 +111,7 @@ func New(cfg config.Config, version string) (service.Service, error) {
 // database silently diverged from the tray's at worst. Resolving it
 // here, relative to the cwd of the interactive process installing the
 // service (a sane, predictable location), fixes that. Caught by
-// code review; see PLAN.md §10.7.
+// code review.
 func buildServiceConfig(cfg config.Config) (*service.Config, error) {
 	env := cfg.Environ()
 

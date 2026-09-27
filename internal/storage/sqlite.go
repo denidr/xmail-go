@@ -1,5 +1,5 @@
 // Package storage manages the SQLite connection and schema migrations
-// for xmail. See PLAN.md §2 (schema) and Fase 1.
+// for xmail. The schema itself lives in the embedded migrations.
 package storage
 
 import (

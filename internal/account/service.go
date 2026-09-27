@@ -258,7 +258,7 @@ func (s *Service) Send(ctx context.Context, accountID string, msg mailer.Outgoin
 // prior version had each caller re-guard protocol=="" independently,
 // which both duplicated logic and had already caused one real bug where
 // a caller's un-defaulted copy of protocol disagreed with the fetcher
-// this function actually built (see PLAN.md §10 for that incident).
+// this function actually built.
 func (s *Service) resolveFetcher(ctx context.Context, accountID, protocol string) (fetcher mailer.Fetcher, resolvedProtocol string, err error) {
 	if protocol == "" {
 		protocol = DefaultProtocol
@@ -330,9 +330,9 @@ func (s *Service) ListFolders(ctx context.Context, accountID, protocol string) (
 // mailbox that does not exist (mailer.ErrFolderNotFound) -> ErrValidation
 // (HTTP 400) instead of a server error (500). Everything else — dial
 // failures, auth errors, timeouts, other IMAP errors — passes through
-// unchanged, so a real server problem is never disguised as bad input
-// (see PLAN-FOLDERS.md §3.8). Keeping the mapping here (rather than in
-// internal/api or internal/mcpserver) means both skins classify alike.
+// unchanged, so a real server problem is never disguised as bad input.
+// Keeping the mapping here (rather than in internal/api or
+// internal/mcpserver) means both skins classify alike.
 func domainError(err error) error {
 	if errors.Is(err, mailer.ErrFolderNotFound) {
 		return fmt.Errorf("%w: %s", ErrValidation, err)
@@ -350,8 +350,8 @@ func domainError(err error) error {
 // requested window. It dials the mail server when the cache can't
 // answer: nothing cached yet, the window extends past what's been
 // cached, or the mailbox isn't known to be fully cached. This is what
-// makes "fetch berikutnya lebih cepat" (PRD.MD §6.3) literally true
-// without silently truncating a larger request to an older, smaller
+// makes "the next fetch is faster" literally true without silently
+// truncating a larger request to an older, smaller
 // cached page (a real bug — see CODE_REVIEW.md round 5). Pass
 // refresh=true (or call CheckNew, which always dials) to force a live
 // re-fetch that also refreshes the cache.
@@ -436,12 +436,12 @@ func (s *Service) CheckNew(ctx context.Context, accountID, protocol, folder stri
 	return unread, newCount, nil
 }
 
-// MarkRead marks the message identified by uid in folder as read (see
-// PRD.MD §6.3 "mark as read"). Only protocols whose Fetcher also
-// implements mailer.Marker support this — currently IMAP only, via the
-// \Seen flag; POP3 has no per-message flag concept. Also updates the
-// Message cache so a subsequent cached FetchMessages call reflects
-// the new read state without a live re-fetch.
+// MarkRead marks the message identified by uid in folder as read. Only
+// protocols whose Fetcher also implements mailer.Marker support this —
+// currently IMAP only, via the \Seen flag; POP3 has no per-message flag
+// concept. Also updates the Message cache so a subsequent cached
+// FetchMessages call reflects the new read state without a live
+// re-fetch.
 func (s *Service) MarkRead(ctx context.Context, accountID, protocol, folder, uid string) error {
 	fetcher, protocol, err := s.resolveFetcher(ctx, accountID, protocol)
 	if err != nil {

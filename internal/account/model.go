@@ -1,5 +1,5 @@
 // Package account defines the Account domain model and its persistence
-// and orchestration logic. See PLAN.md §2-3.
+// and orchestration logic.
 package account
 
 import "time"
@@ -40,8 +40,8 @@ type Account struct {
 // server-reported unread count, and how many of the most recent messages
 // were not yet in the Message cache. Shared by the REST and MCP adapters
 // — both serialize this one type — so the two can't drift on the
-// response shape (see PRD.MD §6.4). The JSON tags mirror the wire format
-// both endpoints already used.
+// response shape. The JSON tags mirror the wire format both endpoints
+// already used.
 type CheckResult struct {
 	Unread int `json:"unread_count"`
 	New    int `json:"new_count"`

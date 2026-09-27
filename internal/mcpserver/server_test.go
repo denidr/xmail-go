@@ -127,8 +127,8 @@ func TestHandleListFolders_MissingAccountID(t *testing.T) {
 }
 
 // TestHandleListFolders_ProtocolWithoutFolders locks the MCP side of the
-// "no folders" guard (PLAN-FOLDERS.md §3.8): a folder-less protocol is a
-// tool-level error, not a crash or an empty list.
+// "no folders" guard: a folder-less protocol is a tool-level error, not
+// a crash or an empty list.
 func TestHandleListFolders_ProtocolWithoutFolders(t *testing.T) {
 	ctx := context.Background()
 	s, svc := newTestServer(t)
@@ -214,7 +214,7 @@ func TestHandleSendEmail(t *testing.T) {
 		t.Errorf("sent message = %+v, mismatched fields", sent)
 	}
 	// Regression: MCP send_email used to silently drop cc/bcc that the
-	// REST endpoint (sendRequest) already supported — see PLAN.md §10.6.
+	// REST endpoint (sendRequest) already supported.
 	if len(sent.CC) != 1 || sent.CC[0] != "cc@example.com" {
 		t.Errorf("sent.CC = %v, want [cc@example.com]", sent.CC)
 	}
@@ -400,9 +400,9 @@ func TestTransport_SendEmailBindsArguments(t *testing.T) {
 
 // TestTransport_CheckNewEmailsWireKeys decodes check_new_emails' response
 // off the wire and asserts the JSON keys are unread_count/new_count —
-// the same keys REST's /check emits from the shared account.CheckResult
-// (PLAN.md §10.9 candidate D). Asserting the decoded struct's fields
-// would not catch a bad `json` tag; this does.
+// the same keys REST's /check emits from the shared account.CheckResult.
+// Asserting the decoded struct's fields would not catch a bad `json`
+// tag; this does.
 func TestTransport_CheckNewEmailsWireKeys(t *testing.T) {
 	ctx := context.Background()
 	s, svc := newTestServer(t)
