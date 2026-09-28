@@ -146,7 +146,7 @@ The assets are unauthenticated *by design* — a page's own HTML/CSS/JS requests
 2. `account.Service.ListFolders` (`internal/account/service.go`): defaults an empty `protocol` to `DefaultProtocol`, loads the `Account` + `ConnConfig`, looks up the registered `Protocol.FolderLister` (`internal/account/protocol.go` — only IMAP registers one; see ADR 0001), and calls `.ListFolders(ctx)` on it. A protocol with no folder concept (`pop3`, `smtp`) is `ErrValidation` (400).
 3. `imap.Client.ListFolders` (`internal/mailer/imap/client.go`) dials, runs one `LIST "" "*"` (nil options — safe on every server), maps each `ListData` → `mailer.Folder` (delimiter NIL → `""`, attributes passed through), and sorts by name so REST and MCP return identical order. There is no cache: it always goes live.
 4. Handler normalizes a nil slice to `[]` and writes it directly — no DTO, like `Message` (`mailer.Folder` carries no secret).
-5. Separately, when a folder named in `Fetch`/`Check`/`MarkRead` does not exist, `imap.classifyFolderErr` turns the IMAP status response into `mailer.ErrFolderNotFound`, and `Service.domainError` maps that to `ErrValidation` (400) — so a bad folder is a caller error, not a 500.
+5. Separately, when a folder named in `Fetch`/`Check`/`MarkRead` does not exist, `imap.classifyFolderErr` turns the IMAP status response into `mailer.ErrFolderNotFound`, and `Service.mapFolderNotFound` maps that to `ErrValidation` (400) — so a bad folder is a caller error, not a 500.
 
 ## 4. Data Model
 
